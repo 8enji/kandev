@@ -1,14 +1,78 @@
 "use client";
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { IconCheck, IconClock, IconEdit, IconRobot, IconUser, IconX } from "@tabler/icons-react";
+import {
+  IconCheck,
+  IconClock,
+  IconEdit,
+  IconFile,
+  IconRobot,
+  IconUser,
+  IconX,
+} from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Button } from "@kandev/ui";
 import { Textarea } from "@kandev/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@kandev/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { QueueEntryNotFoundError } from "@/lib/api/domains/queue-api";
+import { openImageInWindow } from "@/components/task/chat/file-attachment";
 import type { QueuedMessage } from "@/lib/state/slices/session/types";
+
+type QueuedAttachment = NonNullable<QueuedMessage["attachments"]>[number];
+
+type AttachmentRowProps = {
+  attachments: QueuedAttachment[];
+  interactive: boolean;
+};
+
+/**
+ * Renders queued-message attachments as compact thumbnails (images) and chips
+ * (other resources). Used in both display and edit views; `interactive=false`
+ * disables the click-to-open behavior so it stays a passive context cue while
+ * editing the message text.
+ */
+function AttachmentRow({ attachments, interactive }: AttachmentRowProps) {
+  if (attachments.length === 0) return null;
+  const images = attachments.filter((a) => a.type === "image");
+  const files = attachments.filter((a) => a.type !== "image");
+  const onImageKeyDown = (att: QueuedAttachment) => (e: React.KeyboardEvent<HTMLImageElement>) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openImageInWindow(att.mime_type, att.data);
+    }
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {images.map((att, i) => (
+        /* eslint-disable-next-line @next/next/no-img-element -- base64 data URLs are not compatible with next/image */
+        <img
+          key={`img-${i}`}
+          src={`data:${att.mime_type};base64,${att.data}`}
+          alt={`Attachment ${i + 1}`}
+          role={interactive ? "button" : undefined}
+          tabIndex={interactive ? 0 : undefined}
+          className={cn(
+            "h-10 w-10 rounded-md border border-border object-cover",
+            interactive &&
+              "cursor-pointer hover:opacity-90 transition-opacity focus:outline-none focus:ring-2 focus:ring-primary",
+          )}
+          onClick={interactive ? () => openImageInWindow(att.mime_type, att.data) : undefined}
+          onKeyDown={interactive ? onImageKeyDown(att) : undefined}
+        />
+      ))}
+      {files.map((_, i) => (
+        <span
+          key={`file-${i}`}
+          className="inline-flex items-center gap-1.5 rounded-full bg-muted/60 px-2 py-0.5 text-xs text-muted-foreground"
+        >
+          <IconFile className="h-3 w-3" />
+          Attachment
+        </span>
+      ))}
+    </div>
+  );
+}
 
 /** Strip internal <kandev-system>...</kandev-system> blocks from display text. */
 function stripSystemTags(text: string): string {
@@ -63,13 +127,22 @@ function SenderChip({ entry }: SenderChipProps) {
 type EditViewProps = {
   value: string;
   saving: boolean;
+  attachments: QueuedAttachment[];
   onChange: (v: string) => void;
   onSave: () => void;
   onCancel: () => void;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
 };
 
-function EditView({ value, saving, onChange, onSave, onCancel, textareaRef }: EditViewProps) {
+function EditView({
+  value,
+  saving,
+  attachments,
+  onChange,
+  onSave,
+  onCancel,
+  textareaRef,
+}: EditViewProps) {
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -81,6 +154,7 @@ function EditView({ value, saving, onChange, onSave, onCancel, textareaRef }: Ed
   };
   return (
     <div className="space-y-2 p-2">
+      <AttachmentRow attachments={attachments} interactive={false} />
       <Textarea
         ref={textareaRef}
         data-testid="queue-edit-textarea"
@@ -131,6 +205,7 @@ type DisplayViewProps = {
 function DisplayView({ entry, canEdit, onStartEdit, onRemove }: DisplayViewProps) {
   const visible = stripSystemTags(entry.content);
   const display = visible.length > 200 ? visible.slice(0, 200) + "..." : visible;
+  const attachments = (entry.attachments ?? []) as QueuedAttachment[];
   return (
     <div className="flex items-start gap-2 px-3 py-2">
       <Tooltip>
@@ -143,7 +218,12 @@ function DisplayView({ entry, canEdit, onStartEdit, onRemove }: DisplayViewProps
       </Tooltip>
       <div className="flex-1 min-w-0 space-y-1">
         <SenderChip entry={entry} />
-        <div className="text-sm text-foreground/80 whitespace-pre-wrap break-words">{display}</div>
+        <AttachmentRow attachments={attachments} interactive={true} />
+        {display && (
+          <div className="text-sm text-foreground/80 whitespace-pre-wrap break-words">
+            {display}
+          </div>
+        )}
       </div>
       <div className="flex items-center gap-0.5 flex-shrink-0">
         {canEdit && (
@@ -259,6 +339,7 @@ export const QueuedGhostMessage = forwardRef<QueuedGhostMessageHandle, QueuedGho
           <EditView
             value={value}
             saving={saving}
+            attachments={(entry.attachments ?? []) as QueuedAttachment[]}
             onChange={setValue}
             onSave={handleSave}
             onCancel={handleCancel}
