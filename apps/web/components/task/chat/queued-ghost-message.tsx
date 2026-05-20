@@ -3,20 +3,28 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import {
   IconCheck,
-  IconClock,
+  IconChevronDown,
+  IconChevronUp,
   IconEdit,
   IconFile,
+  IconInfoCircle,
   IconRobot,
   IconUser,
   IconX,
 } from "@tabler/icons-react";
+import ReactMarkdown from "react-markdown";
 import { toast } from "sonner";
 import { Button } from "@kandev/ui";
 import { Textarea } from "@kandev/ui/textarea";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@kandev/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { QueueEntryNotFoundError } from "@/lib/api/domains/queue-api";
+import { stripSystemTags } from "@/lib/utils/system-tags";
 import { openImageInWindow } from "@/components/task/chat/file-attachment";
+import {
+  SenderTaskBadge,
+  type SenderTaskInfo,
+} from "@/components/task/chat/messages/sender-task-badge";
+import { markdownComponents, remarkPlugins } from "@/components/shared/markdown-components";
 import type { QueuedMessage } from "@/lib/state/slices/session/types";
 
 type QueuedAttachment = NonNullable<QueuedMessage["attachments"]>[number];
@@ -74,11 +82,6 @@ function AttachmentRow({ attachments, interactive }: AttachmentRowProps) {
   );
 }
 
-/** Strip internal <kandev-system>...</kandev-system> blocks from display text. */
-function stripSystemTags(text: string): string {
-  return text.replace(/<kandev-system>[\s\S]*?<\/kandev-system>/g, "").trim();
-}
-
 /** Imperative handle for the ghost row, used by chat input "edit last queued" affordance. */
 export type QueuedGhostMessageHandle = {
   startEdit: () => void;
@@ -104,24 +107,36 @@ function senderLabel(entry: QueuedMessage): string {
   return "You";
 }
 
-type SenderChipProps = { entry: QueuedMessage };
+type SenderIconProps = { entry: QueuedMessage };
 
-function SenderChip({ entry }: SenderChipProps) {
-  const kind = senderKindOf(entry);
-  const Icon = kind === "agent" ? IconRobot : IconUser;
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
-        kind === "agent"
-          ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
-          : "bg-primary/10 text-primary",
-      )}
-    >
-      <Icon className="h-3 w-3" />
-      {senderLabel(entry)}
-    </span>
-  );
+function senderIconFor(kind: SenderKind): { Icon: typeof IconUser; tone: string } {
+  if (kind === "agent") {
+    return { Icon: IconRobot, tone: "text-amber-500 dark:text-amber-400" };
+  }
+  if (kind === "system") {
+    return { Icon: IconInfoCircle, tone: "text-muted-foreground" };
+  }
+  return { Icon: IconUser, tone: "text-blue-500 dark:text-blue-300" };
+}
+
+function SenderIcon({ entry }: SenderIconProps) {
+  const { Icon, tone } = senderIconFor(senderKindOf(entry));
+  return <Icon className={cn("h-3.5 w-3.5 flex-shrink-0", tone)} aria-label={senderLabel(entry)} />;
+}
+
+/**
+ * Returns the inter-task sender info when this entry was queued by another
+ * task's agent (queued_by="agent" + sender_task_id in metadata). User-typed
+ * entries have no SenderTaskInfo — they render with just the IconUser cue.
+ */
+function getSenderTaskInfo(entry: QueuedMessage): SenderTaskInfo | null {
+  if (senderKindOf(entry) !== "agent") return null;
+  const meta = entry.metadata as
+    | { sender_task_id?: string; sender_task_title?: string }
+    | undefined;
+  const id = meta?.sender_task_id;
+  if (typeof id !== "string" || id.length === 0) return null;
+  return { id, snapshotTitle: meta?.sender_task_title ?? "" };
 }
 
 type EditViewProps = {
@@ -153,7 +168,7 @@ function EditView({
     }
   };
   return (
-    <div className="space-y-2 p-2">
+    <div className="space-y-2 py-2">
       <AttachmentRow attachments={attachments} interactive={false} />
       <Textarea
         ref={textareaRef}
@@ -197,35 +212,85 @@ function EditView({
 
 type DisplayViewProps = {
   entry: QueuedMessage;
+  positionLabel: string;
   canEdit: boolean;
   onStartEdit: () => void;
   onRemove: () => void;
 };
 
-function DisplayView({ entry, canEdit, onStartEdit, onRemove }: DisplayViewProps) {
+/** Rough threshold above which we offer a per-row expand toggle. Two lines of
+ * the row's text width fit ~80 chars OR any explicit newline implies overflow,
+ * so we use either signal to surface the chevron — short multi-line messages
+ * (lists, code blocks) would otherwise be silently truncated. */
+const EXPAND_THRESHOLD = 80;
+
+function shouldOfferExpand(text: string): boolean {
+  return text.length > EXPAND_THRESHOLD || text.includes("\n");
+}
+
+function DisplayView({ entry, positionLabel, canEdit, onStartEdit, onRemove }: DisplayViewProps) {
   const visible = stripSystemTags(entry.content);
-  const display = visible.length > 200 ? visible.slice(0, 200) + "..." : visible;
   const attachments = (entry.attachments ?? []) as QueuedAttachment[];
+  const senderTask = getSenderTaskInfo(entry);
+  const [expanded, setExpanded] = useState(false);
+  const canExpand = shouldOfferExpand(visible);
   return (
-    <div className="flex items-start gap-2 px-3 py-2">
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="mt-0.5 flex items-center gap-1 text-muted-foreground">
-            <IconClock className="h-3.5 w-3.5" />
-          </span>
-        </TooltipTrigger>
-        <TooltipContent side="top">Will run on the next turn</TooltipContent>
-      </Tooltip>
+    <div className="group flex items-start gap-2 py-1.5">
+      <span className="flex items-center gap-1.5 mt-0.5 text-muted-foreground">
+        <span
+          aria-label={`Position ${positionLabel}`}
+          className="font-mono text-[10px] tabular-nums"
+        >
+          {positionLabel}
+        </span>
+        {!senderTask && <SenderIcon entry={entry} />}
+      </span>
       <div className="flex-1 min-w-0 space-y-1">
-        <SenderChip entry={entry} />
-        <AttachmentRow attachments={attachments} interactive={true} />
-        {display && (
-          <div className="text-sm text-foreground/80 whitespace-pre-wrap break-words">
-            {display}
+        {senderTask && <SenderTaskBadge sender={senderTask} size="xs" />}
+        {visible && (
+          <div
+            data-testid="queue-entry-text"
+            data-expanded={expanded ? "true" : "false"}
+            className={cn(
+              "markdown-body max-w-none text-sm text-foreground/80 break-words overflow-hidden",
+              "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+              "transition-[max-height] duration-200 ease-out motion-reduce:transition-none",
+              expanded ? "max-h-[40rem]" : "max-h-[2.75rem]",
+            )}
+          >
+            <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>
+              {visible}
+            </ReactMarkdown>
           </div>
         )}
+        <AttachmentRow attachments={attachments} interactive={true} />
       </div>
-      <div className="flex items-center gap-0.5 flex-shrink-0">
+      <div
+        className={cn(
+          "flex items-center gap-0.5 flex-shrink-0 transition-opacity",
+          // Hover-reveal on devices that support hover (desktop); always
+          // visible on touch surfaces where there's no hover affordance.
+          "opacity-0 group-hover:opacity-100 focus-within:opacity-100",
+          "[@media(hover:none)]:opacity-100",
+        )}
+      >
+        {canExpand && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 w-6 cursor-pointer p-0 text-muted-foreground hover:text-foreground"
+            onClick={() => setExpanded((v) => !v)}
+            title={expanded ? "Collapse message" : "Expand message"}
+            data-testid="queue-entry-expand"
+            aria-expanded={expanded}
+          >
+            {expanded ? (
+              <IconChevronUp className="h-3.5 w-3.5" />
+            ) : (
+              <IconChevronDown className="h-3.5 w-3.5" />
+            )}
+          </Button>
+        )}
         {canEdit && (
           <>
             <Button
@@ -255,6 +320,8 @@ function DisplayView({ entry, canEdit, onStartEdit, onRemove }: DisplayViewProps
 
 type QueuedGhostMessageProps = {
   entry: QueuedMessage;
+  /** Zero-based render position; combined with entry.position to label the row. */
+  index?: number;
   /**
    * Edit is only allowed when the caller's identity (currentUserId) matches the
    * entry's queued_by. Inter-task entries are visible but read-only.
@@ -267,7 +334,7 @@ type QueuedGhostMessageProps = {
 };
 
 export const QueuedGhostMessage = forwardRef<QueuedGhostMessageHandle, QueuedGhostMessageProps>(
-  function QueuedGhostMessage({ entry, canEdit, onSave, onRemove, onEditComplete }, ref) {
+  function QueuedGhostMessage({ entry, index, canEdit, onSave, onRemove, onEditComplete }, ref) {
     const [editing, setEditing] = useState(false);
     const [value, setValue] = useState(entry.content);
     const [saving, setSaving] = useState(false);
@@ -328,11 +395,14 @@ export const QueuedGhostMessage = forwardRef<QueuedGhostMessageHandle, QueuedGho
       }
     }, [value, entry.content, onSave, onEditComplete]);
 
+    const positionNumber = entry.position ?? (index ?? 0) + 1;
+    const positionLabel = `#${positionNumber}`;
+
     return (
       <div
         className={cn(
-          "rounded-md border-l-2 bg-muted/40 text-sm",
-          senderKindOf(entry) === "agent" ? "border-amber-400/60" : "border-primary/40",
+          "rounded-md border border-border/60 bg-background/40 px-2 text-sm",
+          "hover:border-border transition-colors",
         )}
       >
         {editing ? (
@@ -348,6 +418,7 @@ export const QueuedGhostMessage = forwardRef<QueuedGhostMessageHandle, QueuedGho
         ) : (
           <DisplayView
             entry={entry}
+            positionLabel={positionLabel}
             canEdit={canEdit}
             onStartEdit={startEdit}
             onRemove={onRemove}

@@ -3,7 +3,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useSettingsData } from "@/hooks/domains/settings/use-settings-data";
 import { type ChatInputContainerHandle } from "@/components/task/chat/chat-input-container";
-import { QueuedGhostList } from "@/components/task/chat/queued-ghost-list";
 import { MessageList } from "@/components/task/chat/message-list";
 import { useChatPanelState } from "@/components/task/chat/use-chat-panel-state";
 import {
@@ -33,12 +32,7 @@ function useQuickChatState(sessionId: string) {
     onOpenFileAtLine: undefined,
   });
   const { isSending, handleSubmit } = useSubmitHandler(panelState, undefined);
-  const { clearQueue } = panelState;
-  const { handleCancelTurn } = useChatPanelHandlers(
-    panelState.resolvedSessionId,
-    clearQueue,
-    chatInputRef,
-  );
+  const { handleCancelTurn } = useChatPanelHandlers(panelState.resolvedSessionId, chatInputRef);
 
   return {
     chatInputRef,
@@ -122,7 +116,6 @@ export const QuickChatContent = memo(function QuickChatContent({
           </div>
         </div>
       )}
-      <QueuedGhostList sessionId={panelState.resolvedSessionId} isArchived={false} />
       <ChatInputArea
         chatInputRef={chatInputRef}
         clarificationKey={clarificationKey}
