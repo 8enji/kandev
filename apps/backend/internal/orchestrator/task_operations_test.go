@@ -452,7 +452,7 @@ func (m *mockMessageCreator) CreatePermissionRequestMessage(context.Context, str
 	return "", nil
 }
 
-func (m *mockMessageCreator) UpdatePermissionMessage(context.Context, string, string, string) error {
+func (m *mockMessageCreator) UpdatePermissionMessage(context.Context, string, string, models.PermissionStatus) error {
 	return nil
 }
 

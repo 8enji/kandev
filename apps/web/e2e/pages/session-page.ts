@@ -378,6 +378,12 @@ export class SessionPage {
     return this.chat.getByTestId("permission-approve");
   }
 
+  /** Kandev-MCP-only "Approve" buttons (excludes the generic ToolCallMessage
+   *  fallback row that may briefly duplicate the same pending_id). */
+  kandevPermissionApproveButtons(): Locator {
+    return this.chat.getByTestId("kandev-tool-permission").getByTestId("permission-approve");
+  }
+
   /** Reset context button in the chat input toolbar. */
   resetContextButton(): Locator {
     return this.page.getByTestId("reset-context-button");

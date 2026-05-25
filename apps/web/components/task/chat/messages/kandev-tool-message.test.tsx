@@ -273,3 +273,162 @@ describe("KandevToolMessage document & question renderers", () => {
     expect(html).toBe("");
   });
 });
+
+// Unset status is treated as pending by parsePermission.
+function pendingPermissionMessage(toolCallId: string): Message {
+  return {
+    id: "perm-1",
+    session_id: toSessionId("s1"),
+    task_id: toTaskId("t1"),
+    author_type: "agent",
+    content: "permission",
+    type: "permission_request",
+    created_at: "2026-05-21T10:00:01Z",
+    metadata: {
+      pending_id: "pend-1",
+      tool_call_id: toolCallId,
+      action_type: "mcp_tool",
+      action_details: {},
+      options: [
+        { option_id: "allow", name: "Allow", kind: "allow_once" },
+        { option_id: "reject", name: "Reject", kind: "reject_once" },
+      ],
+    },
+  };
+}
+
+describe("KandevToolMessage permission UI", () => {
+  it("renders Approve / Deny buttons when permissionMessage is pending", () => {
+    const html = renderToStaticMarkup(
+      <KandevToolMessage
+        comment={kandevToolCall({
+          status: "pending",
+          toolName: "mcp__kandev__list_workspaces_kandev",
+        })}
+        permissionMessage={pendingPermissionMessage("tc-1")}
+      />,
+    );
+    expect(html).toContain('data-testid="permission-action-row"');
+    expect(html).toContain('data-testid="permission-approve"');
+    expect(html).toContain('data-testid="permission-reject"');
+  });
+
+  it("does not render permission row when permissionMessage is absent", () => {
+    const html = renderToStaticMarkup(
+      <KandevToolMessage
+        comment={kandevToolCall({
+          status: "complete",
+          toolName: "mcp__kandev__list_workspaces_kandev",
+        })}
+      />,
+    );
+    expect(html).not.toContain('data-testid="permission-action-row"');
+    expect(html).not.toContain('data-testid="permission-approve"');
+  });
+
+  it("renders an amber pending clock icon while waiting for approval", () => {
+    const html = renderToStaticMarkup(
+      <KandevToolMessage
+        comment={kandevToolCall({
+          status: "pending",
+          toolName: "mcp__kandev__list_workspaces_kandev",
+        })}
+        permissionMessage={pendingPermissionMessage("tc-1")}
+      />,
+    );
+    expect(html).toContain("tabler-icon-clock");
+    expect(html).toContain("text-amber");
+  });
+
+  it("hides the result-count summary while pending (no misleading '0 workspaces')", () => {
+    const html = renderToStaticMarkup(
+      <KandevToolMessage
+        comment={kandevToolCall({
+          status: "pending",
+          toolName: "mcp__kandev__list_workspaces_kandev",
+        })}
+        permissionMessage={pendingPermissionMessage("tc-1")}
+      />,
+    );
+    expect(html).not.toContain("0 workspaces");
+  });
+});
+
+describe("KandevToolMessage resolved-permission overlay", () => {
+  function resolvedPermissionMessage(toolCallId: string, status: "approved" | "rejected"): Message {
+    const msg = pendingPermissionMessage(toolCallId);
+    return {
+      ...msg,
+      metadata: { ...(msg.metadata as object), status },
+    } as Message;
+  }
+
+  it("drops the amber pending clock once the permission resolves to approved", () => {
+    const html = renderToStaticMarkup(
+      <KandevToolMessage
+        comment={kandevToolCall({
+          status: "pending",
+          toolName: "mcp__kandev__list_workspaces_kandev",
+        })}
+        permissionMessage={resolvedPermissionMessage("tc-1", "approved")}
+      />,
+    );
+    expect(html).not.toContain("tabler-icon-clock");
+    expect(html).not.toContain('data-testid="permission-action-row"');
+  });
+
+  it("does NOT mark the tool complete just because the permission was approved", () => {
+    const html = renderToStaticMarkup(
+      <KandevToolMessage
+        comment={kandevToolCall({
+          status: "pending",
+          toolName: "mcp__kandev__list_workspaces_kandev",
+        })}
+        permissionMessage={resolvedPermissionMessage("tc-1", "approved")}
+      />,
+    );
+    expect(html).not.toContain("tabler-icon-check");
+  });
+
+  it("still renders an error when the tool_call errors after an approved permission", () => {
+    const html = renderToStaticMarkup(
+      <KandevToolMessage
+        comment={kandevToolCall({
+          status: "error",
+          toolName: "mcp__kandev__list_workspaces_kandev",
+        })}
+        permissionMessage={resolvedPermissionMessage("tc-1", "approved")}
+      />,
+    );
+    expect(html).toContain("tabler-icon-x");
+  });
+
+  it("shows the result summary once permission resolves even if meta.status still pending", () => {
+    const html = renderToStaticMarkup(
+      <KandevToolMessage
+        comment={kandevToolCall({
+          status: "pending",
+          toolName: "mcp__kandev__list_workspaces_kandev",
+          resultJson: { workspaces: [{ id: "w1", name: "Main" }], total: 1 },
+        })}
+        permissionMessage={resolvedPermissionMessage("tc-1", "approved")}
+      />,
+    );
+    expect(html).toContain("1 workspace");
+  });
+
+  it("renders a red X overlay when the permission is rejected", () => {
+    const html = renderToStaticMarkup(
+      <KandevToolMessage
+        comment={kandevToolCall({
+          status: "pending",
+          toolName: "mcp__kandev__list_workspaces_kandev",
+        })}
+        permissionMessage={resolvedPermissionMessage("tc-1", "rejected")}
+      />,
+    );
+    expect(html).toContain("tabler-icon-x");
+    expect(html).toContain("text-red-500");
+    expect(html).not.toContain("tabler-icon-clock");
+  });
+});

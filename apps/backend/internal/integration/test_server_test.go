@@ -160,7 +160,7 @@ func (a *testMessageCreatorAdapter) CreatePermissionRequestMessage(ctx context.C
 	return msg.ID, nil
 }
 
-func (a *testMessageCreatorAdapter) UpdatePermissionMessage(ctx context.Context, sessionID, pendingID, status string) error {
+func (a *testMessageCreatorAdapter) UpdatePermissionMessage(ctx context.Context, sessionID, pendingID string, status models.PermissionStatus) error {
 	return a.svc.UpdatePermissionMessage(ctx, sessionID, pendingID, status)
 }
 

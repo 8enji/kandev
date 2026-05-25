@@ -995,7 +995,7 @@ func (s *Service) handlePermissionCancelledEvent(ctx context.Context, payload *l
 	if sessionID == "" || payload.Data.PendingID == "" || s.messageCreator == nil {
 		return
 	}
-	if err := s.messageCreator.UpdatePermissionMessage(ctx, sessionID, payload.Data.PendingID, "expired"); err != nil {
+	if err := s.messageCreator.UpdatePermissionMessage(ctx, sessionID, payload.Data.PendingID, models.PermissionStatusExpired); err != nil {
 		s.logger.Warn("failed to mark permission as expired",
 			zap.String("session_id", sessionID),
 			zap.String("pending_id", payload.Data.PendingID),

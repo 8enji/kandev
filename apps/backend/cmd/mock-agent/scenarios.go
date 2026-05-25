@@ -34,6 +34,7 @@ var scenarioRegistry = map[string]func(e *emitter){
 	"clarification-multi":     scenarioClarificationMulti,
 	"clarification-timeout":   scenarioClarificationTimeout,
 	"multi-permission":        scenarioMultiPermission,
+	"kandev-mcp-permission":   scenarioKandevMCPPermission,
 	"review-cumulative-setup": scenarioReviewCumulativeSetup,
 	"symlink-file-setup":      scenarioSymlinkFileSetup,
 }
@@ -127,6 +128,33 @@ func scenarioMultiPermission(e *emitter) {
 
 	fixedDelay(50)
 	e.text("Multi-permission scenario complete.")
+}
+
+// scenarioKandevMCPPermission emits a tool_call with a Kandev MCP tool title and
+// blocks on a permission request, exercising the kandev renderer's approval UI.
+func scenarioKandevMCPPermission(e *emitter) {
+	fixedDelay(50)
+	e.text("Calling a Kandev MCP tool that needs approval.")
+
+	fixedDelay(50)
+	id := nextToolID()
+	toolName := "mcp__kandev__list_workspaces_kandev"
+	input := map[string]any{}
+	e.startTool(id, toolName, acp.ToolKindOther, input)
+	allowed := e.requestPermission(id, toolName, acp.ToolKindOther, input)
+
+	fixedDelay(50)
+	if allowed {
+		e.completeTool(id, map[string]any{
+			"workspaces": []map[string]any{{"id": "w1", "name": "Main"}},
+			"total":      1,
+		})
+	} else {
+		e.completeTool(id, map[string]any{"error": "denied"})
+	}
+
+	fixedDelay(50)
+	e.text("Kandev MCP permission scenario complete.")
 }
 
 // scenarioPermissionFlow: tool requiring permission with fixed delays.

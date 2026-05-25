@@ -240,6 +240,10 @@ type wsPermissionRespondRequest struct {
 	PendingID string `json:"pending_id"`
 	OptionID  string `json:"option_id,omitempty"`
 	Cancelled bool   `json:"cancelled,omitempty"`
+	// Rejected is true when the user explicitly clicked Deny. Distinct from
+	// Cancelled (user dismissed the dialog) so the backend can persist
+	// "rejected" status without triggering the cancellation event path.
+	Rejected bool `json:"rejected,omitempty"`
 }
 
 func (h *Handlers) wsRespondToPermission(ctx context.Context, msg *ws.Message) (*ws.Message, error) {
@@ -261,9 +265,10 @@ func (h *Handlers) wsRespondToPermission(ctx context.Context, msg *ws.Message) (
 		zap.String("session_id", req.SessionID),
 		zap.String("pending_id", req.PendingID),
 		zap.String("option_id", req.OptionID),
-		zap.Bool("cancelled", req.Cancelled))
+		zap.Bool("cancelled", req.Cancelled),
+		zap.Bool("rejected", req.Rejected))
 
-	if err := h.service.RespondToPermission(ctx, req.SessionID, req.PendingID, req.OptionID, req.Cancelled); err != nil {
+	if err := h.service.RespondToPermission(ctx, req.SessionID, req.PendingID, req.OptionID, req.Cancelled, req.Rejected); err != nil {
 		h.logger.Error("failed to respond to permission", zap.String("session_id", req.SessionID), zap.Error(err))
 		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "Failed to respond to permission: "+err.Error(), nil)
 	}

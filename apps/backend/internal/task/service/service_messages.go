@@ -510,7 +510,7 @@ func (s *Service) applyToolCallMessageUpdate(message *models.Message, status, re
 
 // UpdatePermissionMessage updates a permission request message's status.
 // It includes retry logic to handle race conditions.
-func (s *Service) UpdatePermissionMessage(ctx context.Context, sessionID, pendingID, status string) error {
+func (s *Service) UpdatePermissionMessage(ctx context.Context, sessionID, pendingID string, status models.PermissionStatus) error {
 	const maxRetries = 5
 	const retryDelay = 100 * time.Millisecond
 
@@ -550,7 +550,7 @@ func (s *Service) UpdatePermissionMessage(ctx context.Context, sessionID, pendin
 	if message.Metadata == nil {
 		message.Metadata = make(map[string]interface{})
 	}
-	message.Metadata["status"] = status
+	message.Metadata["status"] = string(status)
 
 	if err := s.messages.UpdateMessage(ctx, message); err != nil {
 		s.logger.Error("failed to update permission message",
@@ -565,7 +565,7 @@ func (s *Service) UpdatePermissionMessage(ctx context.Context, sessionID, pendin
 
 	// When a permission expires, also mark the related tool call as cancelled
 	// so the UI no longer shows a loading spinner on the tool call.
-	if status == "expired" {
+	if status == models.PermissionStatusExpired {
 		if toolCallID, ok := message.Metadata["tool_call_id"].(string); ok && toolCallID != "" {
 			if err := s.UpdateToolCallMessage(ctx, sessionID, toolCallID, "error", "", "", nil); err != nil {
 				s.logger.Warn("failed to cancel related tool call message",
@@ -579,7 +579,7 @@ func (s *Service) UpdatePermissionMessage(ctx context.Context, sessionID, pendin
 	s.logger.Info("permission message updated",
 		zap.String("message_id", message.ID),
 		zap.String("pending_id", pendingID),
-		zap.String("status", status))
+		zap.String("status", string(status)))
 
 	return nil
 }

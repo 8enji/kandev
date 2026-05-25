@@ -240,6 +240,33 @@ const (
 	MessageTypeTodo MessageType = "todo"
 )
 
+// PermissionStatus is the resolution status of a permission request message,
+// stored under metadata.status. Pending is the absence sentinel: a freshly
+// created permission_request message does not set metadata.status, and any
+// reader treats that as PermissionStatusPending.
+type PermissionStatus string
+
+const (
+	// PermissionStatusPending is the empty-string sentinel for the unresolved
+	// state. CreatePermissionRequestMessage does not write metadata.status at
+	// all; readers compare against this constant instead of the bare "".
+	PermissionStatusPending PermissionStatus = ""
+	// PermissionStatusApproved means the user (or automation) accepted the request.
+	PermissionStatusApproved PermissionStatus = "approved"
+	// PermissionStatusRejected means the user did not accept the request.
+	// Collapses two distinct ACP outcomes: explicit Deny (selected option with
+	// kind reject_once/reject_always) AND dialog dismissal (ACP cancelled
+	// outcome on the wire, triggered today only by the fallback path when the
+	// prompt offers no reject_* option). Split into separate Rejected /
+	// Dismissed statuses if the audit trail ever needs to distinguish them.
+	PermissionStatusRejected PermissionStatus = "rejected"
+	// PermissionStatusExpired means the request became unanswerable: the agent
+	// withdrew the prompt before a response arrived (permission_cancelled
+	// event), or agentctl rejected the response because the pending entry was
+	// already gone. No ACP outcome ever reaches the wire in this state.
+	PermissionStatusExpired PermissionStatus = "expired"
+)
+
 // Message represents a message in a task session
 type Message struct {
 	ID            string                 `json:"id"`

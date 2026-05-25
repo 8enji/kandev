@@ -5,9 +5,26 @@ import type { Message } from "@/lib/types/http";
 import type { ToolCallMetadata } from "@/components/task/chat/types";
 import { extractKandevStem, extractMcpResult } from "./kandev/parse";
 import { getKandevRenderer } from "./kandev/registry";
+import { PermissionActionRow } from "./permission-action-row";
+import { parsePermission, usePermissionResponseHandlers } from "./use-permission-handlers";
+import { KandevPermissionUIProvider, type KandevPermissionUIState } from "./kandev/shared";
+import type { PermissionRequestMetadata } from "./use-permission-handlers";
+
+// Approval falls through to `undefined` on purpose: the tool_call status
+// stays the source of truth so an approved-but-still-pending tool does not
+// render as complete and a later tool_call error is not masked.
+function derivePermissionUI(
+  permissionStatus: PermissionRequestMetadata["status"],
+  isPermissionPending: boolean,
+): KandevPermissionUIState {
+  if (isPermissionPending) return "pending";
+  if (permissionStatus === "rejected") return "rejected";
+  return undefined;
+}
 
 type KandevToolMessageProps = {
   comment: Message;
+  permissionMessage?: Message;
 };
 
 // kandevStemOf scans the several fields that may carry the raw MCP tool name
@@ -54,9 +71,16 @@ export function hasKandevRenderer(comment: Message): boolean {
 // rules drift out of sync with the registry.
 export const KandevToolMessage = memo(function KandevToolMessage({
   comment,
+  permissionMessage,
 }: KandevToolMessageProps) {
   const meta = comment.metadata as ToolCallMetadata | undefined;
   const renderer = getKandevRenderer(kandevStemOf(comment));
+  const { permissionMetadata, permissionStatus, isPermissionPending } =
+    parsePermission(permissionMessage);
+  const { isResponding, handleApprove, handleReject } = usePermissionResponseHandlers({
+    permissionMetadata,
+    permissionMessage,
+  });
   if (!renderer) return null;
 
   // The ACP normalizer stores MCP tool args/result inside the Generic payload:
@@ -70,8 +94,29 @@ export const KandevToolMessage = memo(function KandevToolMessage({
   const rawResult = generic?.output ?? meta?.result;
   const result = extractMcpResult(rawResult);
 
+  const permissionUI = derivePermissionUI(permissionStatus, isPermissionPending);
+
   // Each renderer is a stable function-pointer pulled from the static
   // registry, so invoking it like a function (rather than via JSX) is safe
   // and avoids the lint rule against "components created during render".
-  return renderer({ args, result, status: meta?.status });
+  const rendered = (
+    <KandevPermissionUIProvider value={permissionUI}>
+      {renderer({ args, result, status: meta?.status })}
+    </KandevPermissionUIProvider>
+  );
+
+  if (!isPermissionPending) return rendered;
+
+  return (
+    <>
+      {rendered}
+      <div className="mt-2 ml-7" data-testid="kandev-tool-permission">
+        <PermissionActionRow
+          onApprove={handleApprove}
+          onReject={handleReject}
+          isResponding={isResponding}
+        />
+      </div>
+    </>
+  );
 });

@@ -439,11 +439,10 @@ func (s *Service) failAutomationRunOnPermission(ctx context.Context, data watche
 		return
 	}
 
-	// Always cancel: the session is going to be marked failed anyway, and
-	// passing cancelled=false would let RespondToPermission set the session
-	// back to running ("approved") even though the optionID denotes rejection.
+	// Use rejected=true so the backend persists "rejected" status. cancelled is
+	// also true here because the session is going to be marked failed anyway.
 	optionID := pickRejectOption(data.Options)
-	if err := s.RespondToPermission(ctx, data.TaskSessionID, data.PendingID, optionID, true); err != nil {
+	if err := s.RespondToPermission(ctx, data.TaskSessionID, data.PendingID, optionID, true, true); err != nil {
 		s.logger.Warn("failed to auto-reject permission for run-mode automation",
 			zap.String("task_id", data.TaskID),
 			zap.String("pending_id", data.PendingID),

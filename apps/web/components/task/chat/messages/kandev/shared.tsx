@@ -1,8 +1,14 @@
 "use client";
 
-import { type ReactNode } from "react";
+import { createContext, useContext, type ReactNode } from "react";
 import { Badge } from "@kandev/ui/badge";
-import { IconCheck, IconX, type IconProps, type Icon as TablerIcon } from "@tabler/icons-react";
+import {
+  IconCheck,
+  IconClock,
+  IconX,
+  type IconProps,
+  type Icon as TablerIcon,
+} from "@tabler/icons-react";
 import { GridSpinner } from "@/components/grid-spinner";
 import { cn } from "@/lib/utils";
 import { ExpandableRow } from "../expandable-row";
@@ -17,6 +23,14 @@ export function KandevStatusIcon({ status }: { status: KandevStatus }) {
   if (status === "running") return <GridSpinner className="text-muted-foreground" />;
   return null;
 }
+
+// Display overlay applied alongside the tool_call's own status. Never replaces
+// it — see derivePermissionUI in kandev-tool-message.tsx for the reasoning.
+export type KandevPermissionUIState = "pending" | "rejected" | undefined;
+
+const KandevPermissionUIContext = createContext<KandevPermissionUIState>(undefined);
+
+export const KandevPermissionUIProvider = KandevPermissionUIContext.Provider;
 
 type KandevRowProps = {
   Icon: TablerIcon | ((p: IconProps) => ReactNode);
@@ -39,9 +53,13 @@ export function KandevRow({
   hasExpandableContent,
   children,
 }: KandevRowProps) {
+  const permissionUI = useContext(KandevPermissionUIContext);
+  const isAwaitingPermission = permissionUI === "pending";
+  const isRejected = permissionUI === "rejected";
   const autoExpanded = status === "running";
   const { isExpanded, handleToggle } = useExpandState(status, autoExpanded);
-  const isSuccess = status === "complete";
+  // Rejection wins over success so a completed-then-denied tool still reads as denied.
+  const isSuccess = status === "complete" && !isRejected;
 
   return (
     <ExpandableRow
@@ -49,12 +67,12 @@ export function KandevRow({
       header={
         <div className="flex items-center gap-2 text-xs min-w-0">
           <span className="font-mono text-xs text-muted-foreground shrink-0">{title}</span>
-          {summary && (
+          {summary && !isAwaitingPermission && (
             <span className="text-xs text-muted-foreground/80 truncate min-w-0">{summary}</span>
           )}
           {!isSuccess && (
             <span className="shrink-0">
-              <KandevStatusIcon status={status} />
+              {renderHeaderStatusIcon({ isAwaitingPermission, isRejected, status })}
             </span>
           )}
         </div>
@@ -66,6 +84,21 @@ export function KandevRow({
       {children}
     </ExpandableRow>
   );
+}
+
+function renderHeaderStatusIcon({
+  isAwaitingPermission,
+  isRejected,
+  status,
+}: {
+  isAwaitingPermission: boolean;
+  isRejected: boolean;
+  status: KandevStatus;
+}) {
+  if (isAwaitingPermission)
+    return <IconClock className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />;
+  if (isRejected) return <IconX className="h-3.5 w-3.5 text-red-500" />;
+  return <KandevStatusIcon status={status} />;
 }
 
 // KandevBody is the bordered container used by all expanded sections so they
