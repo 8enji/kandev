@@ -686,12 +686,9 @@ func (s *Service) handleCompleteStreamEvent(ctx context.Context, payload *lifecy
 		s.captureGitStatusSnapshotWithRetry(ctx, payload.SessionID)
 	}
 
-	// Office sessions follow the fire-and-forget shutdown flow: every turn
-	// completion drops the session to IDLE and tears down the agent process +
-	// executor backend. The conversation is preserved via acp_session_id; the
-	// next run recreates everything and reloads. Kanban / quick-chat retains
-	// the warm WAITING_FOR_INPUT model below.
-	if session != nil && s.handleOfficeTurnComplete(ctx, payload.TaskID, payload.SessionID, session) {
+	// Office sessions park at IDLE between scheduler runs; cancelled turns skip that path so the session stays promptable.
+	stopReason := extractStopReason(payload)
+	if session != nil && s.handleOfficeTurnComplete(ctx, payload.TaskID, payload.SessionID, session, stopReason) {
 		return
 	}
 
@@ -707,19 +704,39 @@ func (s *Service) handleCompleteStreamEvent(ctx context.Context, payload *lifecy
 	s.setSessionWaitingForInput(ctx, payload.TaskID, payload.SessionID, session)
 }
 
-// handleOfficeTurnComplete fires the fire-and-forget shutdown flow for office
-// sessions: state flips to IDLE *before* StopAgent so the workflow handler's
-// terminal-state guard short-circuits (mirrors completeAndStopSession).
-// Returns true when the session was handled as office (caller must not fall
-// through to the kanban WAITING_FOR_INPUT path).
+// Mirrors the same read in lifecycle/manager_events.go.
+func extractStopReason(payload *lifecycle.AgentStreamEventPayload) string {
+	if payload == nil || payload.Data == nil {
+		return ""
+	}
+	data, ok := payload.Data.Data.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	sr, _ := data["stop_reason"].(string)
+	return sr
+}
+
+// Mirrors the "cancelled" literal in lifecycle/manager_events.go — not extracted to avoid cross-package coupling.
+const stopReasonCancelled = "cancelled"
+
+// Returns true when handled as office (state→IDLE + StopAgent); stopReason "cancelled" returns false to keep the session promptable.
 func (s *Service) handleOfficeTurnComplete(
-	ctx context.Context, taskID, sessionID string, session *models.TaskSession,
+	ctx context.Context, taskID, sessionID string, session *models.TaskSession, stopReason string,
 ) bool {
 	if session == nil || session.AgentProfileID == "" {
 		return false
 	}
 	task, err := s.repo.GetTask(ctx, taskID)
 	if err != nil || task == nil || task.AssigneeAgentProfileID == "" {
+		return false
+	}
+
+	if stopReason == stopReasonCancelled {
+		s.logger.Info("office turn cancelled by user — skipping IDLE flip, deferring to cancel handler",
+			zap.String("task_id", taskID),
+			zap.String("session_id", sessionID),
+			zap.String("stop_reason", stopReason))
 		return false
 	}
 

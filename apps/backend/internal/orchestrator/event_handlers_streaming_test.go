@@ -284,6 +284,78 @@ func TestSetSessionRunning_WritesOnTransition(t *testing.T) {
 	require.Equal(t, v1.TaskStateInProgress, taskRepo.updatedStates["t1"])
 }
 
+// Pins the call-site wiring: cancelled office turn must NOT leave the session at IDLE.
+func TestHandleCompleteStreamEvent_CancelledOfficeSessionLandsWaitingForInput(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	seedOfficeSession(t, repo, "t-cancel-flow", "s-cancel-flow", "exec-cancel-flow")
+	mgr := &mockAgentManager{}
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), newMockTaskRepo(), mgr)
+
+	// Mirror Service.CancelAgent's pre-emptive WAITING_FOR_INPUT write.
+	session, err := repo.GetTaskSession(ctx, "s-cancel-flow")
+	require.NoError(t, err)
+	session.State = models.TaskSessionStateWaitingForInput
+	require.NoError(t, repo.UpdateTaskSession(ctx, session))
+
+	payload := &lifecycle.AgentStreamEventPayload{
+		TaskID:    "t-cancel-flow",
+		SessionID: "s-cancel-flow",
+		Data: &lifecycle.AgentStreamEventData{
+			Type: agentEventComplete,
+			Data: map[string]interface{}{
+				"stop_reason": "cancelled",
+			},
+		},
+	}
+
+	svc.handleCompleteStreamEvent(ctx, payload)
+
+	got, err := repo.GetTaskSession(ctx, "s-cancel-flow")
+	require.NoError(t, err)
+	require.NotEqual(t, models.TaskSessionStateIdle, got.State,
+		"cancelled office turn must not leave the session IDLE — PromptTask would reject the user's next message")
+	require.Equal(t, models.TaskSessionStateWaitingForInput, got.State,
+		"cancelled office turn must fall through to setSessionWaitingForInput")
+	mgr.mu.Lock()
+	stopCalls := len(mgr.stopAgentArgs)
+	mgr.mu.Unlock()
+	require.Zero(t, stopCalls,
+		"cancelled office turn must not tear down the agent process — Service.CancelAgent owns lifecycle for user cancels")
+}
+
+// Inverse guard: a natural end_turn completion on an office session still parks IDLE + StopAgent.
+func TestHandleCompleteStreamEvent_NaturalOfficeCompleteStillIdle(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	seedOfficeSession(t, repo, "t-natural", "s-natural", "exec-natural")
+	mgr := &mockAgentManager{}
+	svc := createTestServiceWithAgent(repo, newMockStepGetter(), newMockTaskRepo(), mgr)
+
+	payload := &lifecycle.AgentStreamEventPayload{
+		TaskID:    "t-natural",
+		SessionID: "s-natural",
+		Data: &lifecycle.AgentStreamEventData{
+			Type: agentEventComplete,
+			Data: map[string]interface{}{
+				"stop_reason": "end_turn",
+			},
+		},
+	}
+
+	svc.handleCompleteStreamEvent(ctx, payload)
+
+	got, err := repo.GetTaskSession(ctx, "s-natural")
+	require.NoError(t, err)
+	require.Equal(t, models.TaskSessionStateIdle, got.State,
+		"natural office turn completion must still park the session in IDLE")
+	mgr.mu.Lock()
+	stopCalls := len(mgr.stopAgentArgs)
+	mgr.mu.Unlock()
+	require.Equal(t, 1, stopCalls,
+		"natural office turn completion must still call StopAgent to tear down the executor")
+}
+
 // TestSetSessionWaitingForInput_WritesOnTransition is the symmetric counterpart
 // to TestSetSessionRunning_WritesOnTransition: when the session is NOT already
 // WAITING_FOR_INPUT, setSessionWaitingForInput MUST still fire the task write.
