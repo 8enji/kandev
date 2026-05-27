@@ -124,6 +124,14 @@ func (s *Service) launchPrepare(ctx context.Context, req *LaunchSessionRequest) 
 	}, nil
 }
 
+// IsPassthroughProfile reports whether the named agent profile is a CLI
+// passthrough (TUI) profile. Returns false for empty IDs, missing agent
+// managers, or any resolver error — mirrors the conservative "treat as
+// non-passthrough on failure" policy used internally.
+func (s *Service) IsPassthroughProfile(ctx context.Context, profileID string) bool {
+	return s.isPassthroughProfile(ctx, profileID)
+}
+
 func (s *Service) isPassthroughProfile(ctx context.Context, profileID string) bool {
 	if profileID == "" || s.agentManager == nil {
 		return false
