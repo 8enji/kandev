@@ -58,9 +58,8 @@ type OrchestratorStarter interface {
 	// otherwise resolves the agent profile server-side and creates one.
 	EnsureSession(ctx context.Context, taskID string, opts ...orchestrator.EnsureSessionOptions) (*orchestrator.EnsureSessionResponse, error)
 	// IsPassthroughProfile reports whether the named profile is a CLI
-	// passthrough (TUI) profile. Used by httpCreateTask to skip the
-	// pointless prepare-only path for passthrough profiles where
-	// "prepare without start" is not a meaningful state.
+	// passthrough (TUI) profile. Returns false for empty IDs or any
+	// resolver error.
 	IsPassthroughProfile(ctx context.Context, profileID string) bool
 }
 
