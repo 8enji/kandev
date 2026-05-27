@@ -770,6 +770,15 @@ func (h *TaskHandlers) handlePostCreateTaskSession(
 		return
 	}
 	if body.PrepareSession && !body.StartAgent {
+		// Passthrough profiles have no meaningful "prepared but not started"
+		// state: the workspace IS the agent process. launchPrepare silently
+		// upgrades passthrough requests to launchStart, which would defeat
+		// the user's explicit "create without starting agent" choice. Skip
+		// the call entirely — the session gets created on demand the next
+		// time the task is opened (via EnsureSession).
+		if h.orchestrator.IsPassthroughProfile(c.Request.Context(), body.AgentProfileID) {
+			return
+		}
 		resp, err := h.orchestrator.LaunchSession(c.Request.Context(), &orchestrator.LaunchSessionRequest{
 			TaskID:            taskID,
 			Intent:            orchestrator.IntentPrepare,
