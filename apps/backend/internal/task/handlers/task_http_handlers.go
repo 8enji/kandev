@@ -770,29 +770,25 @@ func (h *TaskHandlers) handlePostCreateTaskSession(
 		return
 	}
 	if body.PrepareSession && !body.StartAgent {
-		// Passthrough profiles have no meaningful "prepared but not started"
-		// state: the workspace IS the agent process. launchPrepare silently
-		// upgrades passthrough requests to launchStart, which would defeat
-		// the user's explicit "create without starting agent" choice. Skip
-		// the call entirely — the session gets created on demand the next
-		// time the task is opened (via EnsureSession).
+		// SkipPassthroughUpgrade=true for non-plan-mode passthrough requests
+		// makes launchPrepare create a session in CREATED state instead of
+		// silently upgrading to launchStart. The frontend's PassthroughTerminal
+		// then shows a Start button (mirroring ACP's TaskDescriptionStartButton)
+		// so the agent only starts when the user clicks it.
 		//
-		// Plan-mode prepares are an exception: the frontend silently routes
-		// title-only "Start task" clicks through this branch with PlanMode=true,
-		// and the UI needs a session_id back to activate the plan panel. Let
-		// those flow through; launchPrepare's existing passthrough upgrade
-		// still starts the agent for them.
-		if !body.PlanMode && h.orchestrator.IsPassthroughProfile(c.Request.Context(), body.AgentProfileID) {
-			return
-		}
+		// Plan-mode is the exception: the frontend silently routes title-only
+		// "Start task" clicks through this branch with PlanMode=true, and it
+		// expects the agent to actually start so the plan panel has state to
+		// attach to. Leave the upgrade in place for that case.
 		resp, err := h.orchestrator.LaunchSession(c.Request.Context(), &orchestrator.LaunchSessionRequest{
-			TaskID:            taskID,
-			Intent:            orchestrator.IntentPrepare,
-			AgentProfileID:    body.AgentProfileID,
-			ExecutorID:        body.ExecutorID,
-			ExecutorProfileID: body.ExecutorProfileID,
-			WorkflowStepID:    resolvedStepID,
-			LaunchWorkspace:   true,
+			TaskID:                 taskID,
+			Intent:                 orchestrator.IntentPrepare,
+			AgentProfileID:         body.AgentProfileID,
+			ExecutorID:             body.ExecutorID,
+			ExecutorProfileID:      body.ExecutorProfileID,
+			WorkflowStepID:         resolvedStepID,
+			LaunchWorkspace:        true,
+			SkipPassthroughUpgrade: !body.PlanMode,
 		})
 		if err != nil {
 			h.logger.Error("failed to prepare session for task", zap.Error(err), zap.String("task_id", taskID))

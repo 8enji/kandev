@@ -555,12 +555,12 @@ func (r *recordingOrchestrator) IsPassthroughProfile(_ context.Context, profileI
 	return r.passthroughByID[profileID]
 }
 
-// TestHTTPCreateTask_PassthroughPrepareSkipsLaunchSession guards the contract
-// that "Create without starting agent" really doesn't start the agent for
-// passthrough profiles. Before the fix, the handler called
-// LaunchSession(IntentPrepare), which launchPrepare silently upgrades to
-// launchStart for passthrough profiles, defeating the user's choice.
-func TestHTTPCreateTask_PassthroughPrepareSkipsLaunchSession(t *testing.T) {
+// TestHTTPCreateTask_PassthroughPrepareDefersAgentStart guards the contract
+// that "Create without starting agent" creates a passthrough session row in
+// CREATED state with no PTY running, mirroring ACP. The agent only starts
+// when the user clicks Start in the terminal panel (which calls
+// LaunchSession with IntentStartCreated).
+func TestHTTPCreateTask_PassthroughPrepareDefersAgentStart(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	log := newTestLogger(t)
 
@@ -593,8 +593,13 @@ func TestHTTPCreateTask_PassthroughPrepareSkipsLaunchSession(t *testing.T) {
 	h.httpCreateTask(c)
 
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
-	assert.Empty(t, orch.launchCalls, "LaunchSession must not be called for passthrough + prepare-only — passthrough has no useful prepare-without-start state")
-	assert.NotContains(t, rec.Body.String(), `"session_id"`, "response must not advertise a session_id since none was created")
+	require.Len(t, orch.launchCalls, 1, "passthrough prepare-only must still create a session row via LaunchSession; the agent start is deferred via SkipPassthroughUpgrade")
+	call := orch.launchCalls[0]
+	assert.Equal(t, orchestrator.IntentPrepare, call.Intent)
+	assert.True(t, call.SkipPassthroughUpgrade,
+		"handler must pass SkipPassthroughUpgrade=true for passthrough so launchPrepare creates the session in CREATED state without starting the PTY")
+	assert.Contains(t, rec.Body.String(), `"session_id"`,
+		"response must carry session_id so the frontend can call IntentStartCreated when the user clicks Start")
 }
 
 // TestHTTPCreateTask_NonPassthroughPrepareCallsLaunchSession is the control
@@ -640,6 +645,12 @@ func TestHTTPCreateTask_NonPassthroughPrepareCallsLaunchSession(t *testing.T) {
 	require.Len(t, orch.launchCalls, 1, "non-passthrough prepare must still call LaunchSession")
 	assert.Equal(t, orchestrator.IntentPrepare, orch.launchCalls[0].Intent)
 	assert.Equal(t, "profile-acp", orch.launchCalls[0].AgentProfileID)
+	// SkipPassthroughUpgrade is set to !PlanMode by the handler unconditionally;
+	// for non-passthrough profiles it is harmless because launchPrepare's upgrade
+	// guard only fires when isPassthroughProfile returns true. This assertion
+	// documents the current (correct) value so regressions show up as failures.
+	assert.True(t, orch.launchCalls[0].SkipPassthroughUpgrade,
+		"SkipPassthroughUpgrade is !PlanMode; for a non-plan-mode prepare it is true regardless of profile type (harmless for non-passthrough)")
 }
 
 // TestHTTPCreateTask_PassthroughPlanModePrepareStillCallsLaunchSession guards
@@ -684,4 +695,6 @@ func TestHTTPCreateTask_PassthroughPlanModePrepareStillCallsLaunchSession(t *tes
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 	require.Len(t, orch.launchCalls, 1, "plan-mode passthrough prepare must still call LaunchSession so the frontend can activate the plan panel")
 	assert.Equal(t, orchestrator.IntentPrepare, orch.launchCalls[0].Intent)
+	assert.False(t, orch.launchCalls[0].SkipPassthroughUpgrade,
+		"plan-mode passthrough prepare must keep the upgrade so the agent starts and the plan panel has session state to attach to")
 }
