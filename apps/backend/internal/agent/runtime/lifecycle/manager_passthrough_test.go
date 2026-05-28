@@ -3,12 +3,16 @@ package lifecycle
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/kandev/kandev/internal/agent/agents"
 	settingsmodels "github.com/kandev/kandev/internal/agent/settings/models"
 	agentctltypes "github.com/kandev/kandev/internal/agentctl/types"
@@ -735,4 +739,69 @@ func TestManager_VerifyPassthroughEnabled(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPassthroughMCPStream_OpensAgentStreamWS verifies that the StreamManager's
+// connectMCPStream actually dials /api/v1/agent/stream — the bug PR #1078
+// shipped was specifically that this dial never happened in passthrough mode.
+// The three production call sites in manager_passthrough.go invoke this same
+// function, so testing it here verifies the regression cannot return without
+// also having to mock out the PTY launch path.
+func TestPassthroughMCPStream_OpensAgentStreamWS(t *testing.T) {
+	var agentStreamDialed atomic.Int32
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/agent/stream", func(w http.ResponseWriter, r *http.Request) {
+		agentStreamDialed.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	mux.HandleFunc("/api/v1/workspace/stream", func(w http.ResponseWriter, r *http.Request) {
+		// Workspace stream upgrade — accept and hold so the workspace
+		// connect path doesn't churn while we observe the MCP path.
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	mgr, execution, _ := newClaudePassthroughMCPTestManager(t)
+	// Point the execution's agentctl at our fake server.
+	execution.agentctl = newTestAgentctlClient(t, srv.URL)
+	if err := mgr.executionStore.Add(execution); err != nil {
+		t.Fatalf("add execution: %v", err)
+	}
+
+	// Invoke just the stream-wiring half of startPassthroughSession — we
+	// don't need a real PTY launch to verify the dial happens.
+	go mgr.streamManager.connectMCPStream(execution, nil)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if agentStreamDialed.Load() >= 1 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("expected agent stream WS dial after passthrough launch, got %d", agentStreamDialed.Load())
 }
