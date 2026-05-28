@@ -344,6 +344,88 @@ func TestStepAllowsAutoStart(t *testing.T) {
 	}
 }
 
+// TestEnsureSession_PrepareIntent_PassesSkipPassthroughUpgrade verifies that
+// when EnsureSession decides to create a new session via IntentPrepare (i.e.,
+// no existing session AND the workflow step does NOT have auto_start_agent),
+// it tells LaunchSession to skip launchPrepare's passthrough upgrade. Without
+// this flag, opening a passthrough task at a non-auto-start step would
+// re-start the PTY automatically — defeating the step's "don't auto-start"
+// semantics.
+//
+// We verify behavior indirectly: a passthrough profile without
+// SkipPassthroughUpgrade=true would cause launchPrepare to call launchStart →
+// StartTask → scheduler nil-deref (no real agent). With the flag, launchPrepare
+// calls PrepareTaskSession directly and returns a CREATED-state session. If we
+// get a successful CREATED-state response, the flag is being set.
+func TestEnsureSession_PrepareIntent_PassesSkipPassthroughUpgrade(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	taskRepo := newMockTaskRepo()
+	// Use a passthrough-flagged agent manager. With SkipPassthroughUpgrade=false
+	// (broken behavior), launchPrepare would upgrade to launchStart → StartTask →
+	// nil-deref on the scheduler's exec path. With =true (correct), it calls
+	// PrepareTaskSession and a stub LaunchAgent succeeds.
+	mgr := &mockAgentManager{
+		isPassthrough: true,
+		launchAgentFunc: func(_ context.Context, _ *executor.LaunchAgentRequest) (*executor.LaunchAgentResponse, error) {
+			return &executor.LaunchAgentResponse{AgentExecutionID: "exec-1"}, nil
+		},
+	}
+	// Use a step without auto_start_agent so EnsureSession picks IntentPrepare.
+	stepGetter := newMockStepGetter()
+	stepGetter.steps["step-no-autostart"] = &wfmodels.WorkflowStep{
+		ID:   "step-no-autostart",
+		Name: "no-autostart",
+		// no on_enter actions => auto_start_agent missing => stepAllowsAutoStart=false
+	}
+	svc := createTestServiceWithScheduler(repo, stepGetter, taskRepo, mgr)
+
+	now := time.Now().UTC()
+	if err := repo.CreateWorkspace(ctx, &models.Workspace{ID: "ws1", Name: "Test", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if err := repo.CreateWorkflow(ctx, &models.Workflow{ID: "wf1", WorkspaceID: "ws1", Name: "Test Workflow", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed workflow: %v", err)
+	}
+	if err := repo.CreateTask(ctx, &models.Task{
+		ID:             "task-ensure-1",
+		WorkflowID:     "wf1",
+		WorkspaceID:    "ws1",
+		WorkflowStepID: "step-no-autostart",
+		Title:          "T",
+		Metadata:       map[string]interface{}{"agent_profile_id": "profile-passthrough"},
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	// scheduler.GetTask is backed by mockTaskRepo, so seed it too.
+	taskRepo.tasks["task-ensure-1"] = &v1.Task{
+		ID:          "task-ensure-1",
+		WorkspaceID: "ws1",
+		Metadata:    map[string]any{"agent_profile_id": "profile-passthrough"},
+	}
+
+	resp, err := svc.EnsureSession(ctx, "task-ensure-1")
+	if err != nil {
+		t.Fatalf("EnsureSession failed — if SkipPassthroughUpgrade is missing, launchPrepare would upgrade passthrough to launchStart and StartTask would fail: %v", err)
+	}
+	if resp.SessionID == "" {
+		t.Fatal("expected a session_id in response")
+	}
+	// The session should be in CREATED state (not RUNNING) because SkipPassthroughUpgrade
+	// prevented launchPrepare from upgrading to launchStart.
+	if resp.State != string(models.TaskSessionStateCreated) {
+		t.Errorf("expected session state CREATED (passthrough deferred start), got %q", resp.State)
+	}
+	if resp.Source != "created_prepare" {
+		t.Errorf("expected source=created_prepare, got %q", resp.Source)
+	}
+	if !resp.NewlyCreated {
+		t.Error("expected NewlyCreated=true")
+	}
+}
+
 func TestResolveTaskAgentProfile_TaskMetadataWins(t *testing.T) {
 	repo := setupTestRepo(t)
 	stepGetter := newMockStepGetter()

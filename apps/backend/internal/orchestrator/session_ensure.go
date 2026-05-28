@@ -96,6 +96,12 @@ func (s *Service) EnsureSession(ctx context.Context, taskID string, opts ...Ensu
 		WorkflowStepID:  task.WorkflowStepID,
 		LaunchWorkspace: true,
 		AutoStart:       intent == IntentStart,
+		// When the workflow step lacks auto_start_agent we pick IntentPrepare;
+		// without this flag, launchPrepare would silently upgrade passthrough
+		// requests back to launchStart and start the agent anyway, contradicting
+		// the step's "don't auto-start" semantics. Mirror ACP: leave the agent
+		// off, let the user click Start in the terminal panel.
+		SkipPassthroughUpgrade: intent == IntentPrepare,
 	})
 	if err != nil {
 		return nil, err
