@@ -433,22 +433,25 @@ func TestConnectMCPStream_RetriesOnConnectFailure(t *testing.T) {
 // connect followed by a server-side close, connectMCPStream dials again.
 func TestConnectMCPStream_ReconnectsOnDisconnect(t *testing.T) {
 	var dials atomic.Int32
+	secondDial := make(chan struct{})
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/agent/stream", func(w http.ResponseWriter, r *http.Request) {
-		dials.Add(1)
+		n := dials.Add(1)
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
-		if dials.Load() == 1 {
+		if n == 1 {
 			// First connection: close immediately so the loop reconnects.
-			time.Sleep(50 * time.Millisecond)
 			_ = conn.Close()
 			return
 		}
-		// Second connection: hold open.
+		if n == 2 {
+			close(secondDial)
+		}
+		// Second+ connection: hold open.
 		defer func() { _ = conn.Close() }()
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
@@ -467,13 +470,10 @@ func TestConnectMCPStream_ReconnectsOnDisconnect(t *testing.T) {
 
 	go sm.connectMCPStreamWithCtx(ctx, exec, nil)
 
-	// Wait for two dials: the initial connect + the reconnect after disconnect.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if dials.Load() >= 2 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Wait for the second dial — proves the disconnect-then-reconnect loop ran.
+	select {
+	case <-secondDial:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("expected at least 2 dials after disconnect, got %d", dials.Load())
 	}
-	t.Fatalf("expected at least 2 dials after disconnect, got %d", dials.Load())
 }
