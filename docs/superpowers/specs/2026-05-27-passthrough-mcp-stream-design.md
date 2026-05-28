@@ -76,7 +76,7 @@ If recovery proves messy in practice, a follow-up can route passthrough executio
 - WS opens at launch / resume / fallback. Lives for the entire passthrough session (across PTY restarts).
 - On disconnect, retry loop reconnects with exponential backoff: 1s, 2s, 4s, 8s delays between 5 total attempts (matches `connectWorkspaceStream`'s `backoff *= 2` doubling from a 1s base).
 - Exhausted retries log error and exit. MCP stops working for the remainder of that session; user-visible failure mode is identical to today's bug (tool calls time out), so this is no regression and a strict improvement when the disconnect is transient.
-- On execution removal (`RemoveExecution`), the stream's context cancels and the WS closes.
+- Teardown: the retry goroutine exits the same way `connectUpdatesStream` and `connectWorkspaceStream` peers do — via WS disconnect followed by retry-exhaustion (~15s window). The context comes from `execution.SessionTraceContext()` which is `context.Background()`-derived and does NOT cancel on `RemoveExecution`. If clean-shutdown latency matters here later, wire `Manager.stopCh` into the retry-loop selects (consistent with whatever the peer connectors adopt).
 
 ## Testing
 
