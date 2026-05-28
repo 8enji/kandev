@@ -662,6 +662,44 @@ func TestBuildPassthroughEnv_MergesProfileEnvVars(t *testing.T) {
 	}
 }
 
+func TestBuildPassthroughEnv_MergesRuntimeDefaultEnv(t *testing.T) {
+	mgr := newTestManager()
+
+	rt := &agents.RuntimeConfig{
+		Env: map[string]string{"MCP_TIMEOUT": "7200000"},
+	}
+	env := mgr.buildPassthroughEnv(context.Background(), &AgentExecution{
+		TaskID:    "task-1",
+		SessionID: "session-1",
+	}, rt)
+
+	if env["MCP_TIMEOUT"] != "7200000" {
+		t.Fatalf("MCP_TIMEOUT from rt.Env missing: %+v", env)
+	}
+}
+
+func TestBuildPassthroughEnv_ProfileEnvOverridesRuntimeDefaults(t *testing.T) {
+	mgr := newTestManager()
+	mgr.profileResolver = &mockPassthroughProfileResolver{
+		envVars: []settingsmodels.ProfileEnvVar{
+			{Key: "MCP_TIMEOUT", Value: "60000"},
+		},
+	}
+
+	rt := &agents.RuntimeConfig{
+		Env: map[string]string{"MCP_TIMEOUT": "7200000"},
+	}
+	env := mgr.buildPassthroughEnv(context.Background(), &AgentExecution{
+		TaskID:         "task-1",
+		SessionID:      "session-1",
+		AgentProfileID: "profile-1",
+	}, rt)
+
+	if env["MCP_TIMEOUT"] != "60000" {
+		t.Fatalf("profile env var must override rt.Env default: got %q, want %q", env["MCP_TIMEOUT"], "60000")
+	}
+}
+
 func TestManager_VerifyPassthroughEnabled(t *testing.T) {
 	tests := []struct {
 		name      string
