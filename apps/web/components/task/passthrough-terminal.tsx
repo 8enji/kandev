@@ -27,6 +27,7 @@ import { useEnvironmentSessionId } from "@/hooks/use-environment-session-id";
 import { useTerminalSearch } from "./use-terminal-search";
 import { TerminalSearchBar } from "./terminal-search-bar";
 import { usePanelSearch } from "@/hooks/use-panel-search";
+import { PassthroughTerminalStartOverlay } from "./passthrough-terminal-start-overlay";
 
 type BaseProps = {
   autoFocus?: boolean;
@@ -276,19 +277,54 @@ export function PassthroughTerminal(props: PassthroughTerminalProps) {
         <div ref={terminalRef} className="h-full w-full" />
       </div>
       <TerminalSearchBar search={search} />
-      {!isConnected && (
-        <div
-          data-testid="passthrough-loading"
-          className="absolute inset-0 flex items-start justify-center pt-12 bg-background"
-        >
-          <div className="flex flex-col items-center gap-3 text-muted-foreground">
-            <GridSpinner />
-            <span className="text-sm">
-              {mode === "agent" ? "Preparing workspace..." : "Connecting terminal..."}
-            </span>
-          </div>
-        </div>
-      )}
+      <TerminalLoadingOverlay
+        isConnected={isConnected}
+        mode={mode}
+        sessionState={session?.state ?? null}
+        taskId={taskId}
+        sessionId={sessionId}
+      />
+    </div>
+  );
+}
+
+/** Renders the appropriate overlay when the terminal is not yet connected. */
+function TerminalLoadingOverlay({
+  isConnected,
+  mode,
+  sessionState,
+  taskId,
+  sessionId,
+}: {
+  isConnected: boolean;
+  mode: "agent" | "shell";
+  sessionState: string | null;
+  taskId: string | null;
+  sessionId: string | null | undefined;
+}) {
+  if (isConnected) return null;
+
+  if (mode === "agent" && sessionState === "CREATED" && taskId && sessionId) {
+    return (
+      <PassthroughTerminalStartOverlay
+        taskId={taskId}
+        sessionId={sessionId}
+        sessionState={sessionState}
+      />
+    );
+  }
+
+  return (
+    <div
+      data-testid="passthrough-loading"
+      className="absolute inset-0 flex items-start justify-center pt-12 bg-background"
+    >
+      <div className="flex flex-col items-center gap-3 text-muted-foreground">
+        <GridSpinner />
+        <span className="text-sm">
+          {mode === "agent" ? "Preparing workspace..." : "Connecting terminal..."}
+        </span>
+      </div>
     </div>
   );
 }
