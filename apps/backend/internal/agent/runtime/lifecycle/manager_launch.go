@@ -491,9 +491,13 @@ func (m *Manager) launchBuildExecutorRequest(ctx context.Context, executionID st
 		McpServers:          mcpServers,
 		PreviousExecutionID: reqWithWorktree.PreviousExecutionID,
 		McpMode:             reqWithWorktree.McpMode,
-		AuthToken:           m.revealRuntimeSecret(ctx, metadata, MetadataKeyAuthTokenSecret),
-		BootstrapNonce:      m.revealRuntimeSecret(ctx, metadata, MetadataKeyBootstrapNonceSecret),
-		OnProgress:          onProgress,
+		DisableAskQuestion: shouldDisableAskQuestion(
+			agentConfig,
+			passthroughForLaunch(reqWithWorktree.SessionID, reqWithWorktree.IsPassthrough, profileInfo),
+		),
+		AuthToken:      m.revealRuntimeSecret(ctx, metadata, MetadataKeyAuthTokenSecret),
+		BootstrapNonce: m.revealRuntimeSecret(ctx, metadata, MetadataKeyBootstrapNonceSecret),
+		OnProgress:     onProgress,
 	}
 
 	if resumer, ok := rt.(RemoteSessionResumer); ok {

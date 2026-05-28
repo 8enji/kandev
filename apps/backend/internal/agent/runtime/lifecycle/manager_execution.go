@@ -402,6 +402,7 @@ func (m *Manager) createExecution(ctx context.Context, taskID string, info *Work
 		AgentConfig:         agentConfig,
 		Metadata:            info.Metadata,
 		PreviousExecutionID: info.AgentExecutionID,
+		DisableAskQuestion:  shouldDisableAskQuestion(agentConfig, info.IsPassthrough),
 		AuthToken:           m.revealRuntimeSecret(ctx, info.Metadata, MetadataKeyAuthTokenSecret),
 		BootstrapNonce:      m.revealRuntimeSecret(ctx, info.Metadata, MetadataKeyBootstrapNonceSecret),
 	}

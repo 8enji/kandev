@@ -78,6 +78,53 @@ func TestGetWorkspaceInfoForSession_BasicFields(t *testing.T) {
 	}
 }
 
+func TestGetWorkspaceInfoForSessionPropagatesPassthroughSnapshot(t *testing.T) {
+	svc, _, repo := createTestService(t)
+	ctx := context.Background()
+
+	setupTestTask(t, repo)
+	now := time.Now().UTC()
+
+	passSession := &models.TaskSession{
+		ID:            "session-pass",
+		TaskID:        "task-123",
+		State:         models.TaskSessionStateCompleted,
+		IsPassthrough: true,
+		StartedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := repo.CreateTaskSession(ctx, passSession); err != nil {
+		t.Fatalf("create passthrough session: %v", err)
+	}
+	acpSession := &models.TaskSession{
+		ID:            "session-acp",
+		TaskID:        "task-123",
+		State:         models.TaskSessionStateCompleted,
+		IsPassthrough: false,
+		StartedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := repo.CreateTaskSession(ctx, acpSession); err != nil {
+		t.Fatalf("create acp session: %v", err)
+	}
+
+	infoPass, err := svc.GetWorkspaceInfoForSession(ctx, "task-123", "session-pass")
+	if err != nil {
+		t.Fatalf("passthrough session: %v", err)
+	}
+	if !infoPass.IsPassthrough {
+		t.Fatal("expected IsPassthrough=true from passthrough session snapshot")
+	}
+
+	infoACP, err := svc.GetWorkspaceInfoForSession(ctx, "task-123", "session-acp")
+	if err != nil {
+		t.Fatalf("acp session: %v", err)
+	}
+	if infoACP.IsPassthrough {
+		t.Fatal("expected IsPassthrough=false from ACP session snapshot")
+	}
+}
+
 func TestGetWorkspaceInfoForSession_InfersTaskID(t *testing.T) {
 	svc, _, repo := createTestService(t)
 	ctx := context.Background()

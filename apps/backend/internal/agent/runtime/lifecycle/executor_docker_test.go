@@ -521,8 +521,9 @@ func TestBuildReconnectCreateInstanceRequest(t *testing.T) {
 		Env: map[string]string{
 			"OPENAI_API_KEY": "token",
 		},
-		McpServers: []McpServerConfig{{Name: "test-mcp"}},
-		McpMode:    "config",
+		McpServers:         []McpServerConfig{{Name: "test-mcp"}},
+		McpMode:            "config",
+		DisableAskQuestion: true,
 	}
 
 	got := buildReconnectCreateInstanceRequest(req, "previous-exec")
@@ -549,6 +550,31 @@ func TestBuildReconnectCreateInstanceRequest(t *testing.T) {
 	}
 	if got.McpMode != "config" {
 		t.Fatalf("McpMode = %q, want config", got.McpMode)
+	}
+	if !got.DisableAskQuestion {
+		t.Fatal("expected DisableAskQuestion to be propagated from the request")
+	}
+}
+
+func TestBuildContainerLaunchConfigPropagatesDisableAskQuestion(t *testing.T) {
+	log := newTestDockerLogger()
+	exec := NewDockerExecutor(config.DockerConfig{}, "", log)
+
+	req := &ExecutorCreateRequest{
+		TaskID:             "task-1",
+		SessionID:          "session-1",
+		DisableAskQuestion: true,
+	}
+
+	cfg := exec.buildContainerLaunchConfig(req)
+	if !cfg.DisableAskQuestion {
+		t.Fatal("expected ContainerConfig.DisableAskQuestion to mirror the request value")
+	}
+
+	req.DisableAskQuestion = false
+	cfg = exec.buildContainerLaunchConfig(req)
+	if cfg.DisableAskQuestion {
+		t.Fatal("expected ContainerConfig.DisableAskQuestion=false when request has it false")
 	}
 }
 

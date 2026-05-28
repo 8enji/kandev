@@ -255,6 +255,7 @@ type ExecutorCreateRequest struct {
 	AgentConfig         agents.Agent // Agent type info needed by runtimes
 	PreviousExecutionID string       // Non-empty when reconnecting to a previous execution
 	McpMode             string       // MCP tool mode: "task" (default) or "config"
+	DisableAskQuestion  bool         // Resolved at the manager via shouldDisableAskQuestion; see disable_ask_question.go
 	AuthToken           string       // Previously handshaken agentctl token for reconnects
 	BootstrapNonce      string       // Stored nonce for re-handshake after container restart
 

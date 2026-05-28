@@ -11,7 +11,6 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/kandev/kandev/internal/agent/agents"
 	"github.com/kandev/kandev/internal/agent/docker"
 	"github.com/kandev/kandev/internal/agent/executor"
 	agentctl "github.com/kandev/kandev/internal/agent/runtime/agentctl"
@@ -195,19 +194,20 @@ func (r *DockerExecutor) seedSessionDir(ctx context.Context, req *ExecutorCreate
 
 func (r *DockerExecutor) buildContainerLaunchConfig(req *ExecutorCreateRequest) ContainerConfig {
 	return ContainerConfig{
-		AgentConfig:       req.AgentConfig,
-		WorkspacePath:     "", // Empty = no workspace mount; we clone inside container.
-		TaskID:            req.TaskID,
-		TaskTitle:         req.TaskTitle,
-		TaskEnvironmentID: req.TaskEnvironmentID,
-		SessionID:         req.SessionID,
-		ExecutorProfileID: getMetadataString(req.Metadata, "executor_profile_id"),
-		InstanceID:        req.InstanceID,
-		Credentials:       req.Env,
-		McpServers:        req.McpServers,
-		PrepareScript:     r.resolvePrepareScript(req),
-		ImageTagOverride:  getMetadataString(req.Metadata, MetadataKeyImageTagOverride),
-		LocalClonePath:    localCloneMountPath(req.Metadata),
+		AgentConfig:        req.AgentConfig,
+		WorkspacePath:      "", // Empty = no workspace mount; we clone inside container.
+		TaskID:             req.TaskID,
+		TaskTitle:          req.TaskTitle,
+		TaskEnvironmentID:  req.TaskEnvironmentID,
+		SessionID:          req.SessionID,
+		ExecutorProfileID:  getMetadataString(req.Metadata, "executor_profile_id"),
+		InstanceID:         req.InstanceID,
+		Credentials:        req.Env,
+		McpServers:         req.McpServers,
+		DisableAskQuestion: req.DisableAskQuestion,
+		PrepareScript:      r.resolvePrepareScript(req),
+		ImageTagOverride:   getMetadataString(req.Metadata, MetadataKeyImageTagOverride),
+		LocalClonePath:     localCloneMountPath(req.Metadata),
 	}
 }
 
@@ -441,11 +441,9 @@ func (r *DockerExecutor) findExistingInstance(
 
 func buildReconnectCreateInstanceRequest(req *ExecutorCreateRequest, instanceID string) *agentctl.CreateInstanceRequest {
 	agentType := ""
-	disableAskQuestion := false
 	assumeMcpSse := false
 	if req.AgentConfig != nil {
 		agentType = req.AgentConfig.ID()
-		disableAskQuestion = agents.IsPassthroughOnly(req.AgentConfig)
 		if rt := req.AgentConfig.Runtime(); rt != nil {
 			assumeMcpSse = rt.AssumeMcpSse
 		}
@@ -459,7 +457,7 @@ func buildReconnectCreateInstanceRequest(req *ExecutorCreateRequest, instanceID 
 		McpServers:         req.McpServers,
 		SessionID:          req.SessionID,
 		TaskID:             req.TaskID,
-		DisableAskQuestion: disableAskQuestion,
+		DisableAskQuestion: req.DisableAskQuestion,
 		AssumeMcpSse:       assumeMcpSse,
 		McpMode:            req.McpMode,
 	}
