@@ -491,6 +491,12 @@ type WorkspaceInfo struct {
 	AgentID           string // Agent type ID (e.g., "auggie", "codex") - required for runtime creation
 	ACPSessionID      string // Agent's session ID for conversation resumption (from session metadata)
 
+	// IsPassthrough is the session's mode snapshot taken when the session
+	// was created (TaskSession.IsPassthrough). createExecution honors this
+	// to decide whether to disable interactive MCP tools that have no UI
+	// surface in passthrough mode (see shouldDisableAskQuestion).
+	IsPassthrough bool
+
 	// Executor-aware fields for correct runtime selection and remote reconnection
 	ExecutorType     string                 // Executor type (e.g., "local_pc", "sprites")
 	RuntimeName      agentruntime.Runtime   // Runtime name from ExecutorRunning record

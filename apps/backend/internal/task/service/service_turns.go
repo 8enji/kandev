@@ -330,6 +330,7 @@ func (s *Service) GetWorkspaceInfoForSession(ctx context.Context, taskID, sessio
 		AgentProfileID:    session.AgentProfileID,
 		AgentID:           agentID,
 		ACPSessionID:      acpSessionID,
+		IsPassthrough:     session.IsPassthrough,
 	}
 
 	var taskEnv *models.TaskEnvironment
