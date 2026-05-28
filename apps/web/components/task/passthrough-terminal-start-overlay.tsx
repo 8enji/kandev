@@ -40,7 +40,13 @@ export function PassthroughTerminalStartOverlay({ taskId, sessionId, sessionStat
   return (
     <div
       data-testid="passthrough-start-overlay"
-      className="absolute inset-0 flex items-start justify-center pt-12 bg-background"
+      // z-10 sits above xterm.js's internal layers (e.g. `.xterm-link-layer`
+      // is `z-index: 2` and propagates to the nearest stacking-context
+      // ancestor — which, with the surrounding `position: relative` chain,
+      // is the document root). Without this the button rendered visually
+      // on top of the (transparent) canvas but clicks were captured by
+      // the canvas, making the Start button unclickable.
+      className="absolute inset-0 z-10 flex items-start justify-center pt-12 bg-background"
     >
       <div className="flex flex-col items-center gap-3 text-muted-foreground">
         <Button

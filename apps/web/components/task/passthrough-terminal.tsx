@@ -317,7 +317,9 @@ function TerminalLoadingOverlay({
   return (
     <div
       data-testid="passthrough-loading"
-      className="absolute inset-0 flex items-start justify-center pt-12 bg-background"
+      // z-10 matches PassthroughTerminalStartOverlay so we sit above
+      // xterm.js's internal layers (e.g. `.xterm-link-layer` at z-index 2).
+      className="absolute inset-0 z-10 flex items-start justify-center pt-12 bg-background"
     >
       <div className="flex flex-col items-center gap-3 text-muted-foreground">
         <GridSpinner />
