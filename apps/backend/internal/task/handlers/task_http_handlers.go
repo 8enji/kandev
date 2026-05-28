@@ -770,14 +770,25 @@ func (h *TaskHandlers) handlePostCreateTaskSession(
 		return
 	}
 	if body.PrepareSession && !body.StartAgent {
+		// SkipPassthroughUpgrade=true for non-plan-mode passthrough requests
+		// makes launchPrepare create a session in CREATED state instead of
+		// silently upgrading to launchStart. The frontend's PassthroughTerminal
+		// then shows a Start button (mirroring ACP's TaskDescriptionStartButton)
+		// so the agent only starts when the user clicks it.
+		//
+		// Plan-mode is the exception: the frontend silently routes title-only
+		// "Start task" clicks through this branch with PlanMode=true, and it
+		// expects the agent to actually start so the plan panel has state to
+		// attach to. Leave the upgrade in place for that case.
 		resp, err := h.orchestrator.LaunchSession(c.Request.Context(), &orchestrator.LaunchSessionRequest{
-			TaskID:            taskID,
-			Intent:            orchestrator.IntentPrepare,
-			AgentProfileID:    body.AgentProfileID,
-			ExecutorID:        body.ExecutorID,
-			ExecutorProfileID: body.ExecutorProfileID,
-			WorkflowStepID:    resolvedStepID,
-			LaunchWorkspace:   true,
+			TaskID:                 taskID,
+			Intent:                 orchestrator.IntentPrepare,
+			AgentProfileID:         body.AgentProfileID,
+			ExecutorID:             body.ExecutorID,
+			ExecutorProfileID:      body.ExecutorProfileID,
+			WorkflowStepID:         resolvedStepID,
+			LaunchWorkspace:        true,
+			SkipPassthroughUpgrade: !body.PlanMode,
 		})
 		if err != nil {
 			h.logger.Error("failed to prepare session for task", zap.Error(err), zap.String("task_id", taskID))

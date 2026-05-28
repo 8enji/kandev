@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kandev/kandev/internal/orchestrator/executor"
 	"github.com/kandev/kandev/internal/task/models"
 	sqliterepo "github.com/kandev/kandev/internal/task/repository/sqlite"
 	wfmodels "github.com/kandev/kandev/internal/workflow/models"
@@ -383,6 +384,61 @@ func seedTaskAndSessionWithStep(t *testing.T, repo *sqliterepo.Repository, taskI
 	}
 	if err := repo.CreateTaskSession(ctx, session); err != nil {
 		t.Fatalf("failed to create session: %v", err)
+	}
+}
+
+// TestLaunchPrepare_SkipPassthroughUpgrade_HonorsFlag verifies that when the
+// caller sets SkipPassthroughUpgrade=true, launchPrepare does NOT short-circuit
+// to launchStart for passthrough profiles. The default behavior (flag unset)
+// is already covered by the original PR #744 regression tests; this guards the
+// new opt-out path used by handlePostCreateTaskSession and EnsureSession.
+func TestLaunchPrepare_SkipPassthroughUpgrade_HonorsFlag(t *testing.T) {
+	ctx := context.Background()
+	repo := setupTestRepo(t)
+	// Use a passthrough-flagged agent manager so isPassthroughProfile returns
+	// true — without SkipPassthroughUpgrade=true that would silently redirect
+	// launchPrepare into launchStart.
+	mgr := &mockAgentManager{
+		isPassthrough: true,
+		launchAgentFunc: func(_ context.Context, _ *executor.LaunchAgentRequest) (*executor.LaunchAgentResponse, error) {
+			return &executor.LaunchAgentResponse{AgentExecutionID: "exec-1"}, nil
+		},
+	}
+	taskRepo := newMockTaskRepo()
+	svc := createTestServiceWithScheduler(repo, newMockStepGetter(), taskRepo, mgr)
+
+	// Seed data so PrepareTaskSession resolves successfully without nil-deref'ing.
+	now := time.Now().UTC()
+	if err := repo.CreateWorkspace(ctx, &models.Workspace{ID: "ws1", Name: "Test", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if err := repo.CreateWorkflow(ctx, &models.Workflow{ID: "wf1", WorkspaceID: "ws1", Name: "Test Workflow", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed workflow: %v", err)
+	}
+	if err := repo.CreateTask(ctx, &models.Task{ID: "task-1", WorkflowID: "wf1", WorkspaceID: "ws1", Title: "T", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	// scheduler.GetTask is backed by mockTaskRepo, so seed it too.
+	taskRepo.tasks["task-1"] = &v1.Task{
+		ID:          "task-1",
+		WorkspaceID: "ws1",
+		Metadata:    map[string]any{"agent_profile_id": "profile1"},
+	}
+
+	resp, err := svc.launchPrepare(ctx, &LaunchSessionRequest{
+		TaskID:                 "task-1",
+		AgentProfileID:         "profile1", // marked passthrough by mgr above
+		SkipPassthroughUpgrade: true,
+	})
+
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if resp.State != string(models.TaskSessionStateCreated) {
+		t.Errorf("with SkipPassthroughUpgrade=true, launchPrepare must NOT upgrade — session must be returned in CREATED state, not %q", resp.State)
 	}
 }
 

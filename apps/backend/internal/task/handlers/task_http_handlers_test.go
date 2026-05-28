@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kandev/kandev/internal/common/logger"
+	"github.com/kandev/kandev/internal/orchestrator"
 	"github.com/kandev/kandev/internal/task/models"
 	"github.com/kandev/kandev/internal/task/service"
 )
@@ -530,4 +531,170 @@ func TestAssociatePRFromRepoInputs(t *testing.T) {
 		defer mu.Unlock()
 		assert.Equal(t, 1, count)
 	})
+}
+
+// recordingOrchestrator captures LaunchSession calls and returns a
+// configurable passthrough verdict from IsPassthroughProfile. Used by
+// the create-without-starting-agent tests to assert that the handler
+// skips LaunchSession for passthrough profiles.
+type recordingOrchestrator struct {
+	launchCalls     []*orchestrator.LaunchSessionRequest
+	passthroughByID map[string]bool
+}
+
+func (r *recordingOrchestrator) LaunchSession(_ context.Context, req *orchestrator.LaunchSessionRequest) (*orchestrator.LaunchSessionResponse, error) {
+	r.launchCalls = append(r.launchCalls, req)
+	return &orchestrator.LaunchSessionResponse{Success: true, TaskID: req.TaskID, SessionID: "sess-1"}, nil
+}
+
+func (r *recordingOrchestrator) EnsureSession(_ context.Context, _ string, _ ...orchestrator.EnsureSessionOptions) (*orchestrator.EnsureSessionResponse, error) {
+	return nil, nil
+}
+
+func (r *recordingOrchestrator) IsPassthroughProfile(_ context.Context, profileID string) bool {
+	return r.passthroughByID[profileID]
+}
+
+// TestHTTPCreateTask_PassthroughPrepareDefersAgentStart guards the contract
+// that "Create without starting agent" creates a passthrough session row in
+// CREATED state with no PTY running, mirroring ACP. The agent only starts
+// when the user clicks Start in the terminal panel (which calls
+// LaunchSession with IntentStartCreated).
+func TestHTTPCreateTask_PassthroughPrepareDefersAgentStart(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	log := newTestLogger(t)
+
+	repo := &captureCreateTaskRepo{}
+	svc := service.NewService(service.Repos{
+		Workspaces: repo, Tasks: repo, TaskRepos: repo,
+		Workflows: repo, Messages: repo, Turns: repo,
+		Sessions: repo, GitSnapshots: repo, RepoEntities: repo,
+		Executors: repo, Environments: repo, TaskEnvironments: repo,
+		Reviews: repo,
+	}, nil, log, service.RepositoryDiscoveryConfig{})
+
+	orch := &recordingOrchestrator{
+		passthroughByID: map[string]bool{"profile-passthrough": true},
+	}
+	h := &TaskHandlers{service: svc, orchestrator: orch, logger: log}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(`{
+		"workspace_id": "ws-1",
+		"workflow_id": "wf-1",
+		"title": "TUI task with no agent",
+		"description": "look around",
+		"agent_profile_id": "profile-passthrough",
+		"prepare_session": true
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.httpCreateTask(c)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Len(t, orch.launchCalls, 1, "passthrough prepare-only must still create a session row via LaunchSession; the agent start is deferred via SkipPassthroughUpgrade")
+	call := orch.launchCalls[0]
+	assert.Equal(t, orchestrator.IntentPrepare, call.Intent)
+	assert.True(t, call.SkipPassthroughUpgrade,
+		"handler must pass SkipPassthroughUpgrade=true for passthrough so launchPrepare creates the session in CREATED state without starting the PTY")
+	assert.Contains(t, rec.Body.String(), `"session_id"`,
+		"response must carry session_id so the frontend can call IntentStartCreated when the user clicks Start")
+}
+
+// TestHTTPCreateTask_NonPassthroughPrepareCallsLaunchSession is the control
+// case for the passthrough skip: non-passthrough profiles must still go
+// through LaunchSession(IntentPrepare) so the session row is created and
+// the workspace is prepared. Without this guard a refactor could accidentally
+// short-circuit prepare for everyone.
+func TestHTTPCreateTask_NonPassthroughPrepareCallsLaunchSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	log := newTestLogger(t)
+
+	repo := &captureCreateTaskRepo{}
+	svc := service.NewService(service.Repos{
+		Workspaces: repo, Tasks: repo, TaskRepos: repo,
+		Workflows: repo, Messages: repo, Turns: repo,
+		Sessions: repo, GitSnapshots: repo, RepoEntities: repo,
+		Executors: repo, Environments: repo, TaskEnvironments: repo,
+		Reviews: repo,
+	}, nil, log, service.RepositoryDiscoveryConfig{})
+
+	orch := &recordingOrchestrator{
+		// "profile-acp" is intentionally absent from passthroughByID so
+		// IsPassthroughProfile returns false (zero value of bool).
+		passthroughByID: map[string]bool{},
+	}
+	h := &TaskHandlers{service: svc, orchestrator: orch, logger: log}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(`{
+		"workspace_id": "ws-1",
+		"workflow_id": "wf-1",
+		"title": "ACP task with no agent",
+		"description": "look around",
+		"agent_profile_id": "profile-acp",
+		"prepare_session": true
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.httpCreateTask(c)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Len(t, orch.launchCalls, 1, "non-passthrough prepare must still call LaunchSession")
+	assert.Equal(t, orchestrator.IntentPrepare, orch.launchCalls[0].Intent)
+	assert.Equal(t, "profile-acp", orch.launchCalls[0].AgentProfileID)
+	// SkipPassthroughUpgrade is set to !PlanMode by the handler unconditionally;
+	// for non-passthrough profiles it is harmless because launchPrepare's upgrade
+	// guard only fires when isPassthroughProfile returns true. This assertion
+	// documents the current (correct) value so regressions show up as failures.
+	assert.True(t, orch.launchCalls[0].SkipPassthroughUpgrade,
+		"SkipPassthroughUpgrade is !PlanMode; for a non-plan-mode prepare it is true regardless of profile type (harmless for non-passthrough)")
+}
+
+// TestHTTPCreateTask_PassthroughPlanModePrepareStillCallsLaunchSession guards
+// the exception to the passthrough skip: when the caller asks for a plan-mode
+// prepare-only create (which happens when the user clicks "Start task" with
+// no description for a passthrough profile), the handler MUST still call
+// LaunchSession so the response carries a session_id. The frontend uses that
+// session_id to activate the plan panel; without it, the click is silently
+// dropped.
+func TestHTTPCreateTask_PassthroughPlanModePrepareStillCallsLaunchSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	log := newTestLogger(t)
+
+	repo := &captureCreateTaskRepo{}
+	svc := service.NewService(service.Repos{
+		Workspaces: repo, Tasks: repo, TaskRepos: repo,
+		Workflows: repo, Messages: repo, Turns: repo,
+		Sessions: repo, GitSnapshots: repo, RepoEntities: repo,
+		Executors: repo, Environments: repo, TaskEnvironments: repo,
+		Reviews: repo,
+	}, nil, log, service.RepositoryDiscoveryConfig{})
+
+	orch := &recordingOrchestrator{
+		passthroughByID: map[string]bool{"profile-passthrough": true},
+	}
+	h := &TaskHandlers{service: svc, orchestrator: orch, logger: log}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(`{
+		"workspace_id": "ws-1",
+		"workflow_id": "wf-1",
+		"title": "Plan-mode passthrough task",
+		"agent_profile_id": "profile-passthrough",
+		"prepare_session": true,
+		"plan_mode": true
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.httpCreateTask(c)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Len(t, orch.launchCalls, 1, "plan-mode passthrough prepare must still call LaunchSession so the frontend can activate the plan panel")
+	assert.Equal(t, orchestrator.IntentPrepare, orch.launchCalls[0].Intent)
+	assert.False(t, orch.launchCalls[0].SkipPassthroughUpgrade,
+		"plan-mode passthrough prepare must keep the upgrade so the agent starts and the plan panel has session state to attach to")
 }

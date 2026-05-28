@@ -57,6 +57,10 @@ type OrchestratorStarter interface {
 	// EnsureSession returns the task's existing primary/newest session if any,
 	// otherwise resolves the agent profile server-side and creates one.
 	EnsureSession(ctx context.Context, taskID string, opts ...orchestrator.EnsureSessionOptions) (*orchestrator.EnsureSessionResponse, error)
+	// IsPassthroughProfile reports whether the named profile is a CLI
+	// passthrough (TUI) profile. Returns false for empty IDs or any
+	// resolver error.
+	IsPassthroughProfile(ctx context.Context, profileID string) bool
 }
 
 func NewTaskHandlers(svc *service.Service, orchestrator OrchestratorStarter, repo handlerRepo, planService *service.PlanService, log *logger.Logger) *TaskHandlers {

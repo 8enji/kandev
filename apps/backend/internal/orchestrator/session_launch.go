@@ -41,6 +41,13 @@ type LaunchSessionRequest struct {
 	SkipMessageRecord bool                   `json:"skip_message_record,omitempty"`
 	AutoStart         bool                   `json:"auto_start,omitempty"`
 	Attachments       []v1.MessageAttachment `json:"attachments,omitempty"`
+	// SkipPassthroughUpgrade tells launchPrepare to NOT auto-upgrade
+	// passthrough profiles to launchStart. Set by callers that want a
+	// passthrough session created in CREATED state (no PTY) so the user
+	// can explicitly start the agent later — mirrors ACP's "session row
+	// exists, agent not running" UX. Quick-chat and other callers that
+	// need the PTY ready immediately leave this unset.
+	SkipPassthroughUpgrade bool `json:"skip_passthrough_upgrade,omitempty"`
 }
 
 // LaunchSessionResponse is the unified response for session.launch.
@@ -105,8 +112,13 @@ func (s *Service) LaunchSession(ctx context.Context, req *LaunchSessionRequest) 
 // AutoStart=true means we arrived here from launchStart's blocked-auto-start
 // downgrade path; skipping the upgrade in that case avoids a launchStart ↔
 // launchPrepare bounce.
+//
+// SkipPassthroughUpgrade=true is an explicit caller opt-out: the HTTP create-
+// task handler and EnsureSession use it to mirror ACP's "session in CREATED
+// state, agent started on user action" UX. The frontend PassthroughTerminal
+// renders a Start button in that state.
 func (s *Service) launchPrepare(ctx context.Context, req *LaunchSessionRequest) (*LaunchSessionResponse, error) {
-	if !req.AutoStart && s.isPassthroughProfile(ctx, req.AgentProfileID) {
+	if !req.AutoStart && !req.SkipPassthroughUpgrade && s.isPassthroughProfile(ctx, req.AgentProfileID) {
 		return s.launchStart(ctx, req)
 	}
 	sessionID, err := s.PrepareTaskSession(
@@ -122,6 +134,14 @@ func (s *Service) launchPrepare(ctx context.Context, req *LaunchSessionRequest) 
 		SessionID: sessionID,
 		State:     string(models.TaskSessionStateCreated),
 	}, nil
+}
+
+// IsPassthroughProfile reports whether the named agent profile is a CLI
+// passthrough (TUI) profile. Returns false for empty IDs, missing agent
+// managers, or any resolver error — mirrors the conservative "treat as
+// non-passthrough on failure" policy used internally.
+func (s *Service) IsPassthroughProfile(ctx context.Context, profileID string) bool {
+	return s.isPassthroughProfile(ctx, profileID)
 }
 
 func (s *Service) isPassthroughProfile(ctx context.Context, profileID string) bool {

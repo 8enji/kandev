@@ -27,6 +27,7 @@ import { useEnvironmentSessionId } from "@/hooks/use-environment-session-id";
 import { useTerminalSearch } from "./use-terminal-search";
 import { TerminalSearchBar } from "./terminal-search-bar";
 import { usePanelSearch } from "@/hooks/use-panel-search";
+import { PassthroughTerminalStartOverlay } from "./passthrough-terminal-start-overlay";
 
 type BaseProps = {
   autoFocus?: boolean;
@@ -122,7 +123,13 @@ function useWsBaseUrl() {
  * Decide whether the WS effect should attempt to open a terminal connection.
  *
  * Agent terminals require agentctl readiness — the agent process must be
- * subscribed before passthrough I/O is meaningful.
+ * subscribed before passthrough I/O is meaningful. They also require the
+ * session to have moved past CREATED, because the backend's terminal WS
+ * handler calls `EnsurePassthroughExecution` which *starts* the PTY if no
+ * process is running. For prepared-but-not-started passthrough sessions
+ * (the deferred-start UX) we must NOT connect until the user clicks Start
+ * — otherwise the WS open silently starts the agent and the Start button
+ * is a no-op.
  *
  * Shell terminals route by env on the backend; the env handler lazy-creates
  * the execution and waits for remote readiness server-side, so the client
@@ -133,9 +140,19 @@ function computeCanConnect(
   connectionID: string | null | undefined,
   sessionId: string | null | undefined,
   isAgentctlReady: boolean,
+  sessionState: string | null,
 ): boolean {
   if (!connectionID) return false;
-  if (mode === "agent") return Boolean(sessionId) && isAgentctlReady;
+  if (mode === "agent") {
+    if (!sessionId || !isAgentctlReady) return false;
+    // CREATED = workspace prepared, agent not yet started. Opening the WS
+    // here would auto-start the PTY via EnsurePassthroughExecution, defeating
+    // the Start-button gate. Wait for the state to transition (the user's
+    // Start click triggers IntentStartCreated, which moves the session out
+    // of CREATED, which reactively re-evaluates this gate and opens the WS).
+    if (sessionState === "CREATED") return false;
+    return true;
+  }
   return true;
 }
 
@@ -166,7 +183,13 @@ export function PassthroughTerminal(props: PassthroughTerminalProps) {
   const agentctlStatus = useSessionAgentctl(sessionId);
   const taskId = session?.task_id ?? null;
   const connectionID = mode === "agent" ? sessionId : environmentId;
-  const canConnect = computeCanConnect(mode, connectionID, sessionId, agentctlStatus.isReady);
+  const canConnect = computeCanConnect(
+    mode,
+    connectionID,
+    sessionId,
+    agentctlStatus.isReady,
+    session?.state ?? null,
+  );
   const wsBaseUrl = useWsBaseUrl();
 
   const [isTerminalReady, setIsTerminalReady] = useState(false);
@@ -276,19 +299,56 @@ export function PassthroughTerminal(props: PassthroughTerminalProps) {
         <div ref={terminalRef} className="h-full w-full" />
       </div>
       <TerminalSearchBar search={search} />
-      {!isConnected && (
-        <div
-          data-testid="passthrough-loading"
-          className="absolute inset-0 flex items-start justify-center pt-12 bg-background"
-        >
-          <div className="flex flex-col items-center gap-3 text-muted-foreground">
-            <GridSpinner />
-            <span className="text-sm">
-              {mode === "agent" ? "Preparing workspace..." : "Connecting terminal..."}
-            </span>
-          </div>
-        </div>
-      )}
+      <TerminalLoadingOverlay
+        isConnected={isConnected}
+        mode={mode}
+        sessionState={session?.state ?? null}
+        taskId={taskId}
+        sessionId={sessionId}
+      />
+    </div>
+  );
+}
+
+/** Renders the appropriate overlay when the terminal is not yet connected. */
+function TerminalLoadingOverlay({
+  isConnected,
+  mode,
+  sessionState,
+  taskId,
+  sessionId,
+}: {
+  isConnected: boolean;
+  mode: "agent" | "shell";
+  sessionState: string | null;
+  taskId: string | null;
+  sessionId: string | null | undefined;
+}) {
+  if (isConnected) return null;
+
+  if (mode === "agent" && sessionState === "CREATED" && taskId && sessionId) {
+    return (
+      <PassthroughTerminalStartOverlay
+        taskId={taskId}
+        sessionId={sessionId}
+        sessionState={sessionState}
+      />
+    );
+  }
+
+  return (
+    <div
+      data-testid="passthrough-loading"
+      // z-10 matches PassthroughTerminalStartOverlay so we sit above
+      // xterm.js's internal layers (e.g. `.xterm-link-layer` at z-index 2).
+      className="absolute inset-0 z-10 flex items-start justify-center pt-12 bg-background"
+    >
+      <div className="flex flex-col items-center gap-3 text-muted-foreground">
+        <GridSpinner />
+        <span className="text-sm">
+          {mode === "agent" ? "Preparing workspace..." : "Connecting terminal..."}
+        </span>
+      </div>
     </div>
   );
 }

@@ -190,3 +190,27 @@ describe("useTaskSubmitHandlers — handleCreateSubmit (CLI-mode parity)", () =>
     expect(payloadArg.trimmedDescription).toBe("refactor module");
   });
 });
+
+describe("useTaskSubmitHandlers — handleCreateWithoutAgent (passthrough)", () => {
+  it("builds a withAgent:false payload for passthrough profiles", async () => {
+    const deps = makeDeps({
+      isPassthroughProfile: true,
+      descriptionInputRef: makeRef("inspect repo"),
+    });
+    const { result } = renderHook(() => useTaskSubmitHandlers(deps));
+
+    await act(async () => {
+      await result.current.handleCreateWithoutAgent();
+    });
+
+    // The frontend behavior is unchanged by the bug fix — the backend is
+    // responsible for skipping the LaunchSession call. We lock down that
+    // the frontend still sends withAgent:false for passthrough so the
+    // backend has the signal it needs to apply the skip.
+    expect(buildCreateTaskPayloadMock).toHaveBeenCalledTimes(1);
+    const payloadArg = buildCreateTaskPayloadMock.mock.calls[0]![0] as {
+      withAgent: boolean;
+    };
+    expect(payloadArg.withAgent).toBe(false);
+  });
+});
