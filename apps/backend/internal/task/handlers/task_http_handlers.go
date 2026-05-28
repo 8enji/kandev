@@ -776,7 +776,13 @@ func (h *TaskHandlers) handlePostCreateTaskSession(
 		// the user's explicit "create without starting agent" choice. Skip
 		// the call entirely — the session gets created on demand the next
 		// time the task is opened (via EnsureSession).
-		if h.orchestrator.IsPassthroughProfile(c.Request.Context(), body.AgentProfileID) {
+		//
+		// Plan-mode prepares are an exception: the frontend silently routes
+		// title-only "Start task" clicks through this branch with PlanMode=true,
+		// and the UI needs a session_id back to activate the plan panel. Let
+		// those flow through; launchPrepare's existing passthrough upgrade
+		// still starts the agent for them.
+		if !body.PlanMode && h.orchestrator.IsPassthroughProfile(c.Request.Context(), body.AgentProfileID) {
 			return
 		}
 		resp, err := h.orchestrator.LaunchSession(c.Request.Context(), &orchestrator.LaunchSessionRequest{

@@ -641,3 +641,47 @@ func TestHTTPCreateTask_NonPassthroughPrepareCallsLaunchSession(t *testing.T) {
 	assert.Equal(t, orchestrator.IntentPrepare, orch.launchCalls[0].Intent)
 	assert.Equal(t, "profile-acp", orch.launchCalls[0].AgentProfileID)
 }
+
+// TestHTTPCreateTask_PassthroughPlanModePrepareStillCallsLaunchSession guards
+// the exception to the passthrough skip: when the caller asks for a plan-mode
+// prepare-only create (which happens when the user clicks "Start task" with
+// no description for a passthrough profile), the handler MUST still call
+// LaunchSession so the response carries a session_id. The frontend uses that
+// session_id to activate the plan panel; without it, the click is silently
+// dropped.
+func TestHTTPCreateTask_PassthroughPlanModePrepareStillCallsLaunchSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	log := newTestLogger(t)
+
+	repo := &captureCreateTaskRepo{}
+	svc := service.NewService(service.Repos{
+		Workspaces: repo, Tasks: repo, TaskRepos: repo,
+		Workflows: repo, Messages: repo, Turns: repo,
+		Sessions: repo, GitSnapshots: repo, RepoEntities: repo,
+		Executors: repo, Environments: repo, TaskEnvironments: repo,
+		Reviews: repo,
+	}, nil, log, service.RepositoryDiscoveryConfig{})
+
+	orch := &recordingOrchestrator{
+		passthroughByID: map[string]bool{"profile-passthrough": true},
+	}
+	h := &TaskHandlers{service: svc, orchestrator: orch, logger: log}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(`{
+		"workspace_id": "ws-1",
+		"workflow_id": "wf-1",
+		"title": "Plan-mode passthrough task",
+		"agent_profile_id": "profile-passthrough",
+		"prepare_session": true,
+		"plan_mode": true
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.httpCreateTask(c)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Len(t, orch.launchCalls, 1, "plan-mode passthrough prepare must still call LaunchSession so the frontend can activate the plan panel")
+	assert.Equal(t, orchestrator.IntentPrepare, orch.launchCalls[0].Intent)
+}
