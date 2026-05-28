@@ -80,6 +80,16 @@ func (c *Client) SetTraceContext(ctx context.Context) {
 	c.traceCtx = ctx
 }
 
+// HasAgentStream reports whether the agent stream WebSocket is currently
+// connected. Used by callers that need to skip a redundant dial when another
+// goroutine has already opened the stream (e.g. recovery + passthrough launch
+// racing to open the MCP transport).
+func (c *Client) HasAgentStream() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.agentStreamConn != nil
+}
+
 // getTraceCtx returns the trace context for background operations.
 // Returns context.Background() when no trace context is set.
 func (c *Client) getTraceCtx() context.Context {

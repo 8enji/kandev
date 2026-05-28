@@ -793,6 +793,64 @@ func TestStreamUpdates_DisconnectCleansPending(t *testing.T) {
 	}
 }
 
+// --- Tests for HasAgentStream ---
+
+// TestHasAgentStream_ReflectsConnectionLifecycle verifies that HasAgentStream
+// returns true after a successful StreamUpdates dial and false again after the
+// WebSocket disconnects.
+func TestHasAgentStream_ReflectsConnectionLifecycle(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	// Server holds the connection until the test signals close.
+	holdClose := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		<-holdClose
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	log := newTestLogger()
+	c := &Client{
+		baseURL:         server.URL,
+		httpClient:      &http.Client{Timeout: 5 * time.Second},
+		logger:          log,
+		pendingRequests: make(map[string]chan *ws.Message),
+	}
+
+	if c.HasAgentStream() {
+		t.Fatal("HasAgentStream() = true before connect, want false")
+	}
+
+	disconnected := make(chan struct{})
+	if err := c.StreamUpdates(context.Background(), func(AgentEvent) {}, nil, func(error) {
+		close(disconnected)
+	}); err != nil {
+		t.Fatalf("StreamUpdates returned error: %v", err)
+	}
+
+	// Allow the server-side goroutine to register the conn.
+	time.Sleep(50 * time.Millisecond)
+
+	if !c.HasAgentStream() {
+		t.Fatal("HasAgentStream() = false after connect, want true")
+	}
+
+	close(holdClose)
+	<-disconnected
+	// Give the read goroutine's defer time to clear agentStreamConn.
+	time.Sleep(50 * time.Millisecond)
+
+	if c.HasAgentStream() {
+		t.Fatal("HasAgentStream() = true after disconnect, want false")
+	}
+}
+
 // --- Concurrent request tests ---
 
 func TestConcurrentRequests(t *testing.T) {
