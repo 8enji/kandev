@@ -7,7 +7,6 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/kandev/kandev/internal/agent/agents"
 	"github.com/kandev/kandev/internal/agent/executor"
 	agentctl "github.com/kandev/kandev/internal/agent/runtime/agentctl"
 	"github.com/kandev/kandev/internal/agentctl/server/process"
@@ -94,7 +93,6 @@ func (r *StandaloneExecutor) CreateInstance(ctx context.Context, req *ExecutorCr
 	if req.AgentConfig != nil {
 		agentType = req.AgentConfig.ID()
 	}
-	disableAskQuestion := agents.IsPassthroughOnly(req.AgentConfig)
 	assumeMcpSse := false
 	if req.AgentConfig != nil {
 		if rt := req.AgentConfig.Runtime(); rt != nil {
@@ -113,7 +111,7 @@ func (r *StandaloneExecutor) CreateInstance(ctx context.Context, req *ExecutorCr
 		McpServers:         req.McpServers,
 		SessionID:          req.SessionID,
 		TaskID:             req.TaskID,
-		DisableAskQuestion: disableAskQuestion,
+		DisableAskQuestion: req.DisableAskQuestion,
 		AssumeMcpSse:       assumeMcpSse,
 		McpMode:            req.McpMode,
 	}

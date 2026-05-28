@@ -491,6 +491,7 @@ func (m *Manager) launchBuildExecutorRequest(ctx context.Context, executionID st
 		McpServers:          mcpServers,
 		PreviousExecutionID: reqWithWorktree.PreviousExecutionID,
 		McpMode:             reqWithWorktree.McpMode,
+		DisableAskQuestion:  shouldDisableAskQuestion(agentConfig, profileInfo),
 		AuthToken:           m.revealRuntimeSecret(ctx, metadata, MetadataKeyAuthTokenSecret),
 		BootstrapNonce:      m.revealRuntimeSecret(ctx, metadata, MetadataKeyBootstrapNonceSecret),
 		OnProgress:          onProgress,
