@@ -253,3 +253,110 @@ func (sm *StreamManager) connectWorkspaceStream(execution *AgentExecution, ready
 		zap.String("instance_id", execution.ID),
 		zap.Int("max_retries", maxRetries))
 }
+
+// connectMCPStream opens the agent stream WebSocket for a passthrough
+// execution. It mirrors connectUpdatesStream but with a no-op agent-event
+// handler (passthrough has no ACP session updates) and a no-op disconnect
+// signal (no ACP prompt is waiting on promptDoneCh). The stream is the only
+// transport for kandev MCP tool calls in passthrough mode, so we retry on
+// connect failure AND on mid-session disconnect with exponential backoff.
+//
+// Dedup, not atomic guard: a HasAgentStream() == true check skips the dial.
+// This is a best-effort short-circuit, not a TOCTOU-safe lock. Production
+// callers are sequenced (recovery runs at backend startup; launch and resume
+// follow), so concurrent dials are not a real-world concern. If two callers
+// ever race past this guard, both will succeed and the second StreamUpdates
+// call will overwrite agentctl.Client.agentStreamConn — see follow-up note
+// in the spec.
+//
+// Ready: closed once the first successful connect happens, OR on the final
+// failed attempt — callers using `ready` as a launch gate get unblocked
+// either way.
+func (sm *StreamManager) connectMCPStream(execution *AgentExecution, ready chan<- struct{}) {
+	sm.connectMCPStreamWithCtx(execution.SessionTraceContext(), execution, ready)
+}
+
+// connectMCPStreamWithCtx is the testable inner of connectMCPStream — accepts
+// an explicit context so tests can cancel the retry loop deterministically.
+func (sm *StreamManager) connectMCPStreamWithCtx(ctx context.Context, execution *AgentExecution, ready chan<- struct{}) {
+	const maxConsecutiveFailures = 5
+	const initialBackoff = 1 * time.Second
+
+	signaled := false
+	signalReady := func() {
+		if !signaled && ready != nil {
+			close(ready)
+			signaled = true
+		}
+	}
+	defer signalReady()
+
+	consecutiveFailures := 0
+	backoff := initialBackoff
+
+	for {
+		if execution.agentctl == nil {
+			sm.logger.Debug("connectMCPStream: nil agentctl client, exiting",
+				zap.String("instance_id", execution.ID))
+			return
+		}
+		if execution.agentctl.HasAgentStream() {
+			sm.logger.Debug("connectMCPStream: agent stream already attached, skipping",
+				zap.String("instance_id", execution.ID))
+			signalReady()
+			return
+		}
+
+		disconnected := make(chan struct{})
+		onDisconnect := func(err error) {
+			if err != nil {
+				sm.logger.Debug("passthrough MCP stream disconnected",
+					zap.String("instance_id", execution.ID),
+					zap.Error(err))
+			}
+			close(disconnected)
+		}
+
+		err := execution.agentctl.StreamUpdates(ctx,
+			func(agentctl.AgentEvent) {
+				// Passthrough has no ACP session, so any AgentEvent here is
+				// noise. Silently drop.
+			},
+			sm.mcpHandler,
+			onDisconnect,
+		)
+		if err != nil {
+			consecutiveFailures++
+			sm.logger.Debug("passthrough MCP stream connect failed",
+				zap.String("instance_id", execution.ID),
+				zap.Int("attempt", consecutiveFailures),
+				zap.Error(err))
+			if consecutiveFailures >= maxConsecutiveFailures {
+				sm.logger.Error("passthrough MCP stream connect exhausted retries",
+					zap.String("instance_id", execution.ID),
+					zap.Int("attempts", consecutiveFailures))
+				return
+			}
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return
+			}
+			backoff *= 2
+			continue
+		}
+
+		signalReady()
+		consecutiveFailures = 0
+		backoff = initialBackoff
+
+		select {
+		case <-disconnected:
+			sm.logger.Debug("passthrough MCP stream disconnected, reconnecting",
+				zap.String("instance_id", execution.ID))
+			// fall through to next iteration
+		case <-ctx.Done():
+			return
+		}
+	}
+}
