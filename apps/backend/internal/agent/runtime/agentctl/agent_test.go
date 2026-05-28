@@ -834,18 +834,18 @@ func TestHasAgentStream_ReflectsConnectionLifecycle(t *testing.T) {
 		t.Fatalf("StreamUpdates returned error: %v", err)
 	}
 
-	// Allow the server-side goroutine to register the conn.
-	time.Sleep(50 * time.Millisecond)
-
+	// StreamUpdates sets agentStreamConn before returning (see agent.go's
+	// dial + lock pattern, which assigns under c.mu.Lock() before launching
+	// the read goroutine), so HasAgentStream can be checked immediately.
 	if !c.HasAgentStream() {
 		t.Fatal("HasAgentStream() = false after connect, want true")
 	}
 
 	close(holdClose)
 	<-disconnected
-	// Give the read goroutine's defer time to clear agentStreamConn.
-	time.Sleep(50 * time.Millisecond)
-
+	// readUpdatesStream's defer clears agentStreamConn BEFORE invoking
+	// onDisconnect, so receiving on `disconnected` is a sufficient barrier
+	// — no sleep needed.
 	if c.HasAgentStream() {
 		t.Fatal("HasAgentStream() = true after disconnect, want false")
 	}
