@@ -261,8 +261,13 @@ func (sm *StreamManager) connectWorkspaceStream(execution *AgentExecution, ready
 // transport for kandev MCP tool calls in passthrough mode, so we retry on
 // connect failure AND on mid-session disconnect with exponential backoff.
 //
-// Idempotency: if the underlying agentctl.Client already has an active agent
-// stream (e.g. recovery raced the launch path), we exit early.
+// Dedup, not atomic guard: a HasAgentStream() == true check skips the dial.
+// This is a best-effort short-circuit, not a TOCTOU-safe lock. Production
+// callers are sequenced (recovery runs at backend startup; launch and resume
+// follow), so concurrent dials are not a real-world concern. If two callers
+// ever race past this guard, both will succeed and the second StreamUpdates
+// call will overwrite agentctl.Client.agentStreamConn — see follow-up note
+// in the spec.
 //
 // Ready: closed once the first successful connect happens, OR on the final
 // failed attempt — callers using `ready` as a launch gate get unblocked

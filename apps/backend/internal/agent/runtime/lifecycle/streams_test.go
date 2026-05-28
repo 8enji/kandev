@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -122,15 +123,15 @@ func newExecutionWithAgentctl(t *testing.T, serverURL string) *AgentExecution {
 func newTestAgentctlClient(t *testing.T, serverURL string) *agentctl.Client {
 	t.Helper()
 	u := strings.TrimPrefix(serverURL, "http://")
-	parts := strings.Split(u, ":")
-	if len(parts) != 2 {
-		t.Fatalf("unexpected httptest URL form: %s", serverURL)
+	host, portStr, err := net.SplitHostPort(u)
+	if err != nil {
+		t.Fatalf("parse host:port from %q: %v", serverURL, err)
 	}
 	port := 0
-	if _, err := fmt.Sscanf(parts[1], "%d", &port); err != nil {
-		t.Fatalf("parse port: %v", err)
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+		t.Fatalf("parse port %q: %v", portStr, err)
 	}
-	return agentctl.NewClient(parts[0], port, newTestLogger())
+	return agentctl.NewClient(host, port, newTestLogger())
 }
 
 // TestConnectMCPStream_OpensAndDispatchesMCPRequest verifies the happy path:
@@ -192,16 +193,28 @@ func TestConnectMCPStream_OpensAndDispatchesMCPRequest(t *testing.T) {
 // TestConnectMCPStream_NoOpForAgentEvents verifies that AgentEvent payloads
 // sent over the stream do not invoke OnAgentEvent (which is wired for ACP
 // sessions only; passthrough should drop these silently).
+//
+// Synchronization: we send the AgentEvent first, then an MCP request. The
+// agentctl read loop processes messages FIFO, so when our handler's Dispatch
+// fires for the MCP request, the AgentEvent must already have been processed.
+// No time.Sleep needed.
 func TestConnectMCPStream_NoOpForAgentEvents(t *testing.T) {
 	var eventCalls atomic.Int32
 
+	dispatched := make(chan struct{})
+	handler := &fakeMCPHandler{
+		respond: func(msg *ws.Message) (*ws.Message, error) {
+			close(dispatched)
+			resp, _ := ws.NewResponse(msg.ID, msg.Action, map[string]string{"ok": "yes"})
+			return resp, nil
+		},
+	}
+
 	connReady := make(chan struct{})
+	var serverConn *websocket.Conn
 	srv := fakeAgentStreamServer(t, func(conn *websocket.Conn) {
+		serverConn = conn
 		close(connReady)
-		// Send an AgentEvent immediately.
-		event := agentctl.AgentEvent{Type: "message_chunk", Text: "this is not for passthrough"}
-		data, _ := json.Marshal(event)
-		_ = conn.WriteMessage(websocket.TextMessage, data)
 		// Hold the connection.
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
@@ -216,16 +229,41 @@ func TestConnectMCPStream_NoOpForAgentEvents(t *testing.T) {
 		OnAgentEvent: func(*AgentExecution, agentctl.AgentEvent) {
 			eventCalls.Add(1)
 		},
-	}, &fakeMCPHandler{})
+	}, handler)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go sm.connectMCPStreamWithCtx(ctx, exec, nil)
+	ready := make(chan struct{})
+	go sm.connectMCPStreamWithCtx(ctx, exec, ready)
 
+	<-ready
 	<-connReady
-	// Give the event time to traverse the WS read loop.
-	time.Sleep(200 * time.Millisecond)
+
+	// 1. Send an AgentEvent first.
+	event := agentctl.AgentEvent{Type: "message_chunk", Text: "this is not for passthrough"}
+	eventData, _ := json.Marshal(event)
+	if err := serverConn.WriteMessage(websocket.TextMessage, eventData); err != nil {
+		t.Fatalf("server WriteMessage (event): %v", err)
+	}
+
+	// 2. Send an MCP request after it. FIFO order in the read loop means the
+	// event has been processed by the time Dispatch fires.
+	req, err := ws.NewRequest("req-1", "kandev.mcp.list_workspaces", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	reqData, _ := json.Marshal(req)
+	if err := serverConn.WriteMessage(websocket.TextMessage, reqData); err != nil {
+		t.Fatalf("server WriteMessage (request): %v", err)
+	}
+
+	// 3. Wait for Dispatch — guarantees event was processed first.
+	select {
+	case <-dispatched:
+	case <-time.After(2 * time.Second):
+		t.Fatal("mcpHandler.Dispatch never fired; FIFO sync failed")
+	}
 
 	if got := eventCalls.Load(); got != 0 {
 		t.Errorf("OnAgentEvent invoked %d time(s) for passthrough stream; want 0", got)
@@ -235,11 +273,39 @@ func TestConnectMCPStream_NoOpForAgentEvents(t *testing.T) {
 // TestConnectMCPStream_DisconnectDoesNotSignalPromptDoneCh verifies that a WS
 // disconnect does NOT push an error onto execution.promptDoneCh — passthrough
 // has no ACP prompt waiting, so this signal would be spurious.
+//
+// Synchronization: the first connect is closed by the server, and the
+// reconnect loop dials again. We wait for the second dial as proof the first
+// disconnect has been observed, then check promptDoneCh is still empty.
 func TestConnectMCPStream_DisconnectDoesNotSignalPromptDoneCh(t *testing.T) {
-	srv := fakeAgentStreamServer(t, func(conn *websocket.Conn) {
-		// Hold briefly, then close to trigger disconnect.
-		time.Sleep(100 * time.Millisecond)
+	var dials atomic.Int32
+	secondDial := make(chan struct{})
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/agent/stream", func(w http.ResponseWriter, r *http.Request) {
+		n := dials.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		if n == 1 {
+			// First connection: close immediately to trigger disconnect.
+			_ = conn.Close()
+			return
+		}
+		if n == 2 {
+			close(secondDial)
+		}
+		// Hold subsequent connections open.
+		defer func() { _ = conn.Close() }()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
 	})
+	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	exec := newExecutionWithAgentctl(t, srv.URL)
@@ -250,14 +316,18 @@ func TestConnectMCPStream_DisconnectDoesNotSignalPromptDoneCh(t *testing.T) {
 
 	go sm.connectMCPStreamWithCtx(ctx, exec, nil)
 
-	// Wait for the connection to be torn down.
-	time.Sleep(400 * time.Millisecond)
+	// Wait until the reconnect actually happens — proves the disconnect was observed.
+	select {
+	case <-secondDial:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("second dial never landed after disconnect; dials=%d", dials.Load())
+	}
 
 	select {
 	case sig := <-exec.promptDoneCh:
 		t.Fatalf("promptDoneCh received unexpected signal: %+v", sig)
 	default:
-		// expected
+		// expected — no signal on disconnect
 	}
 }
 
@@ -283,13 +353,13 @@ func TestConnectMCPStream_IdempotentWhenStreamAlreadyAttached(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// First connect succeeds.
+	// First connect succeeds. <-ready fires after signalReady() in
+	// connectMCPStreamWithCtx, which runs after StreamUpdates returns nil.
+	// StreamUpdates sets agentStreamConn before returning, so HasAgentStream()
+	// is already true here — no sleep needed.
 	ready := make(chan struct{})
 	go sm.connectMCPStreamWithCtx(ctx, exec, ready)
 	<-ready
-
-	// Wait for the WS dial to land.
-	time.Sleep(100 * time.Millisecond)
 
 	// Second connect should short-circuit (idempotency).
 	done := make(chan struct{})
