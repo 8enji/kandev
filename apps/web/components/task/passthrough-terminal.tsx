@@ -123,7 +123,13 @@ function useWsBaseUrl() {
  * Decide whether the WS effect should attempt to open a terminal connection.
  *
  * Agent terminals require agentctl readiness — the agent process must be
- * subscribed before passthrough I/O is meaningful.
+ * subscribed before passthrough I/O is meaningful. They also require the
+ * session to have moved past CREATED, because the backend's terminal WS
+ * handler calls `EnsurePassthroughExecution` which *starts* the PTY if no
+ * process is running. For prepared-but-not-started passthrough sessions
+ * (the deferred-start UX) we must NOT connect until the user clicks Start
+ * — otherwise the WS open silently starts the agent and the Start button
+ * is a no-op.
  *
  * Shell terminals route by env on the backend; the env handler lazy-creates
  * the execution and waits for remote readiness server-side, so the client
@@ -134,9 +140,19 @@ function computeCanConnect(
   connectionID: string | null | undefined,
   sessionId: string | null | undefined,
   isAgentctlReady: boolean,
+  sessionState: string | null,
 ): boolean {
   if (!connectionID) return false;
-  if (mode === "agent") return Boolean(sessionId) && isAgentctlReady;
+  if (mode === "agent") {
+    if (!sessionId || !isAgentctlReady) return false;
+    // CREATED = workspace prepared, agent not yet started. Opening the WS
+    // here would auto-start the PTY via EnsurePassthroughExecution, defeating
+    // the Start-button gate. Wait for the state to transition (the user's
+    // Start click triggers IntentStartCreated, which moves the session out
+    // of CREATED, which reactively re-evaluates this gate and opens the WS).
+    if (sessionState === "CREATED") return false;
+    return true;
+  }
   return true;
 }
 
@@ -167,7 +183,13 @@ export function PassthroughTerminal(props: PassthroughTerminalProps) {
   const agentctlStatus = useSessionAgentctl(sessionId);
   const taskId = session?.task_id ?? null;
   const connectionID = mode === "agent" ? sessionId : environmentId;
-  const canConnect = computeCanConnect(mode, connectionID, sessionId, agentctlStatus.isReady);
+  const canConnect = computeCanConnect(
+    mode,
+    connectionID,
+    sessionId,
+    agentctlStatus.isReady,
+    session?.state ?? null,
+  );
   const wsBaseUrl = useWsBaseUrl();
 
   const [isTerminalReady, setIsTerminalReady] = useState(false);
